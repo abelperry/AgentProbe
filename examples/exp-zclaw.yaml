@@ -1,0 +1,32 @@
+name: "zclawbench-experiment"
+concurrency: 5
+output_dir: "./output"
+
+sandbox:
+  host: "localhost:8080"
+  request_timeout: 600
+
+models:
+  claude-sonnet-4-6:
+    base_url: "${GATEWAY_BASE_URL}/v1"
+    api_key: "${GLM_API_KEY}"
+    model_name: "claude-sonnet-4-6"
+    format: "anthropic"
+    thinking: "high"
+
+datasets:
+  zclawbench:
+    name: "zclawbench"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/zclawbench/data"
+    task_type: "benchmarks.zclawbench.task.ZClawBenchTask"
+    judge_config_path:
+      default: "benchmarks/zclawbench/data/judge.yaml"
+      agent_judge_with_playwright: "benchmarks/zclawbench/data/playwright-judge.yaml"
+
+agents:
+  openclaw:
+    type: "agent_probe.agents.openclaw.OpenClawAgent"
+    envs:
+      http_proxy: "${HTTP_PROXY_URL}"
+      no_proxy: "${NO_PROXY_HOSTS}"

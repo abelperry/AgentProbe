@@ -1,0 +1,32 @@
+name: "agent-mrccbench"
+concurrency: 5
+output_dir: "./output"
+
+sandbox:
+  host: "localhost:8080"
+  request_timeout: 600
+  api_key: "${SANDBOX_KEY}"
+
+models:
+  GLM-5.1:
+    base_url: "https://open.bigmodel.cn/api/anthropic/"
+    api_key: "${ZHIPU_API_KEY}"
+    model_name: "GLM-5.1"
+    timeout: 37160
+    max_tokens: 64000
+
+datasets:
+  mrccbench:
+    name: "mrccbench"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/mrccbench/data"
+    task_type: "benchmarks.mrccbench.task.MRCCBenchTask"
+    judge_config_path:
+      default: "benchmarks/mrccbench/data/judge.yaml"
+      agent_judge_with_playwright: "benchmarks/mrccbench/data/judge.yaml"
+
+agents:
+  claude_code:
+    type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+    offline: true
+    offline_package_dir: ${OFFLINE_PACKAGE_DIR}

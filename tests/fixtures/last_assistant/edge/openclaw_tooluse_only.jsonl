@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"test"}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"web_fetch"}],"stopReason":"toolUse"}}
+{"type":"message","message":{"role":"toolResult","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"exec"}],"stopReason":"toolUse"}}

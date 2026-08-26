@@ -1,0 +1,2 @@
+"""ZFrontendBench benchmark for AgentProbe."""
+

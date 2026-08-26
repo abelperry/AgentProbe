@@ -1,0 +1,53 @@
+name: "agent-zfront"
+concurrency: 5
+output_dir: "./output"
+
+sandbox:
+  host: "localhost:8080"
+  request_timeout: 600
+  api_key: "${SANDBOX_KEY}"
+
+
+models:
+  GLM-5.1:
+    base_url: "https://open.bigmodel.cn/api/anthropic/"
+    api_key: "${ZHIPU_API_KEY}"
+    model_name: "GLM-5.1"
+    timeout: 10800
+    max_tokens: 64000
+  
+  kimi-k2.6:
+    base_url: "${GATEWAY_BASE_URL}/"
+    api_key: "${GLM_API_KEY}"
+    model_name: "kimi-k2.6"
+    timeout: 10800
+    max_tokens: 64000
+
+datasets:
+  # terminalbench_v2:
+  #   name: "terminalbench_v2"
+  #   adapter_type: "local_jsonl"
+  #   data_dir: "benchmarks/terminalbench_v2/data"
+  #   task_type: "benchmarks.terminalbench_v2.task.TerminalBenchV2Task"
+
+  # zbackendbench:
+  #   name: "zbackendbench"
+  #   adapter_type: "local_jsonl"
+  #   data_dir: "benchmarks/zbackendbench/data"
+  #   task_type: "benchmarks.zbackendbench.task.ZBackendBenchTask"
+  #   judge_config_path: "benchmarks/zbackendbench/data/judge.yaml"
+
+  zfrontendbench:
+    name: "zfrontendbench"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/zfrontendbench/data"
+    task_type: "benchmarks.zfrontendbench.task.ZFrontendBenchTask"
+    judge_config_path:
+      default: "benchmarks/zfrontendbench/data/playwright-judge.yaml"
+      agent_judge_with_playwright: "benchmarks/zfrontendbench/data/playwright-judge.yaml"
+
+agents:
+  claude_code:
+    type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+    offline: true
+    offline_package_dir: ${OFFLINE_PACKAGE_DIR}

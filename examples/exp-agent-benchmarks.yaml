@@ -1,0 +1,45 @@
+name: "agent-benchmarks"
+concurrency: 5
+output_dir: "./output"
+
+sandbox:
+  host: "localhost:8080"
+  request_timeout: 600
+
+models:
+  glm-5:
+    base_url: "https://open.bigmodel.cn/api/anthropic/"
+    api_key: "${ZHIPU_API_KEY}"
+    timeout: 10800
+    max_tokens: 32000
+
+datasets:
+  terminalbench_v2:
+    name: "terminalbench_v2"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/terminalbench_v2/data"
+    task_type: "benchmarks.terminalbench_v2.task.TerminalBenchV2Task"
+
+  zbackendbench:
+    name: "zbackendbench"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/zbackendbench/data"
+    task_type: "benchmarks.zbackendbench.task.ZBackendBenchTask"
+    judge_config_path: "benchmarks/zbackendbench/data/judge.yaml"
+
+  zfrontendbench:
+    name: "zfrontendbench"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/zfrontendbench/data"
+    task_type: "benchmarks.zfrontendbench.task.ZFrontendBenchTask"
+    judge_config_path:
+      default: "benchmarks/zfrontendbench/data/playwright-judge.yaml"
+      agent_judge_with_playwright: "benchmarks/zfrontendbench/data/playwright-judge.yaml"
+
+agents:
+  claude_code:
+    type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+    envs:
+      http_proxy: "http://host.docker.internal:7897"
+      https_proxy: "http://host.docker.internal:7897"
+      no_proxy: "localhost,127.0.0.1"

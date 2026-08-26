@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+
+# ruff
+.ruff_cache/
+
+# Experiment output
+output/
+
+# Environment
+.env
+.env.*
+
+# uv
+uv.lock
+*.log
+data/
+.vscode/
+.sandbox.toml
+.claude
+
+# Launcher scripts hold API keys in plain text — keep them out of the repo
+run.sh
+run-*.sh
+*.pid

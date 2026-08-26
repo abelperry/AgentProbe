@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"1","name":"Read"}],"stop_reason":"tool_use"}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"1"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"2","name":"Edit"}],"stop_reason":"tool_use"}}

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentprobe"
+version = "0.1.0"
+description = "A highly extensible, high-concurrency Agent evaluation framework"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.4,<3",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+    "opensandbox",
+    "loguru>=0.7.3",
+    "aiofiles>=23.0",
+    "swebench>=4.0,<5.0",
+    "mini-swe-agent>=2.3.0",
+    # mtacifbench: helper exposed to dataset-supplied validation code
+    "emoji>=2.12",
+]
+
+[project.scripts]
+agentprobe = "agent_probe.cli.main:app"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pre-commit>=4.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_probe", "benchmarks"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = "opensandbox.*"
+ignore_missing_imports = true

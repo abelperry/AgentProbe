@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"test","cwd":"/workspace"}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "已写好，`/tmp/ev_hot_topics.md` 内容概览：\n\n- **weibo**（2条）：比亚迪兆瓦闪充方案、理想超充站扩容\n- **zhihu**（2条）：固态电池上车讨论、蔚来/小鹏 800V 对比\n- **baidu**：未发现相关热点\n- **toutiao**（2条）：特斯拉 V4 超充站、充电桩补能网络"}], "stopReason": "stop"}}

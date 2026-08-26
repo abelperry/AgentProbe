@@ -1,0 +1,12 @@
+{"type":"session","version":3,"id":"test","cwd":"/workspace"}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "DuckDuckGo 被拦了，我换 Brave Search 来搜。"}, {"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "API key 没配。我直接用 web_fetch 去几个平台搜索。"}, {"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "电商平台都被拦了。我用浏览器直接搜。"}, {"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "百度搜出来的都是通用冻干品牌，没有精准命中。让我多试几个方向。"}, {"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}, {"type": "toolCall"}], "stopReason": "toolUse"}}
+{"type": "message", "message": {"role": "assistant", "content": [], "stopReason": "error", "errorMessage": "The operation was aborted"}}

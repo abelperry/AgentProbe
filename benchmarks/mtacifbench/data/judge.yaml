@@ -1,0 +1,16 @@
+model:
+  base_url: "${GATEWAY_BASE_URL}/"
+  api_key: "${GATEWAY_API_KEY}"
+  model_name: "deepseek-v4-pro"
+  format: "anthropic"
+  timeout: 37260
+  max_tokens: 64000
+
+agent:
+  type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+  version: "2.1.199"
+  # One judge container per round: an online `npm i -g` at that rate hits
+  # ECONNRESET on this host, so install the native binary from the offline
+  # package instead (the judge image has no npm to fall back on either).
+  offline: true
+  offline_package_dir: ${OFFLINE_PACKAGE_DIR}

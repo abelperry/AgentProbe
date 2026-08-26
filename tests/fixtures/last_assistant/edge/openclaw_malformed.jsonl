@@ -1,0 +1,4 @@
+{"type":"session","version":3}
+not a json line at all
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"stopReason":"stop"}}
+{broken json ...

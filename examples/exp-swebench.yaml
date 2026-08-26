@@ -1,0 +1,37 @@
+name: swebench-verified
+concurrency: 10
+output_dir: ./output
+
+sandbox:
+  host: localhost:8080
+  request_timeout: 600
+  api_key: "${SANDBOX_KEY}"
+
+models:
+  kimi-k2.6:
+    base_url: "${GATEWAY_BASE_URL}/"
+    api_key: "${GATEWAY_API_KEY}"
+    model_name: "kimi-k2.6"
+    thinking: "high"
+    max_tokens: 64000
+  glm-5.1:
+    base_url: "https://open.bigmodel.cn/api/anthropic/"
+    api_key: "${ZHIPU_API_KEY}"
+    model_name: "glm-5.1"
+    max_tokens: 64000
+
+agents:
+  claude_code:
+    type: agent_probe.agents.claude_code.ClaudeCodeAgent
+    offline: true
+    offline_package_dir: ${OFFLINE_PACKAGE_DIR}
+
+datasets:
+  swebench:
+    name: swebench
+    adapter_type: local_jsonl
+    data_dir: benchmarks/swebench/data
+    task_type: benchmarks.swebench.task.SWEBenchTask
+    options:
+      gold: false
+      namespace: swebench

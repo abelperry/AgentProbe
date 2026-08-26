@@ -1,0 +1,57 @@
+name: "agent-mtacifbench"
+# Host is 31 GB / 16 cores. Each inference unit holds one container and each
+# judged round can fan out up to eval_concurrent judge containers, so keep the
+# pipeline narrow.
+concurrency: 3
+output_dir: "./output"
+
+sandbox:
+  host: "localhost:8080"
+  request_timeout: 600
+  api_key: "${SANDBOX_KEY}"
+
+models:
+  glm-5.3:
+    base_url: "https://open.bigmodel.cn/api/anthropic/"
+    api_key: "${ZHIPU_API_KEY}"
+    # This account serves glm-5.3 whatever model id is requested, so name it
+    # honestly: these results are not comparable to the platform's GLM-5.2 run.
+    model_name: "glm-5.3"
+    # CLI budgets mirror the axec platform's agent_config.params
+    # (max_output_tokens 32000 / max_thinking_tokens 16000 / reasoning_effort
+    # max). The 128000 shown in the platform UI is the API-level max_tokens, a
+    # different knob. Still unmatched: temperature=1 / top_p=0.95, which the
+    # Claude Code CLI does not expose.
+    timeout: 37800
+    max_tokens: 32000
+    max_thinking_tokens: 16000
+    thinking: "max"
+
+  # The gateway exposes gemini only in OpenAI format; Claude Code speaks the
+  # Anthropic protocol, so this route needs a translating proxy (which is what
+  # the axec platform runs) before it can be used here.
+  # gemini-3-flash-preview:
+  #   base_url: "${GATEWAY_BASE_URL}/"
+  #   api_key: "${GATEWAY_API_KEY}"
+  #   model_name: "gemini-3-flash-preview"
+  #   format: "anthropic"
+  #   timeout: 37800
+  #   max_tokens: 32000
+  #   max_thinking_tokens: 16000
+  #   thinking: "max"
+
+datasets:
+  mtacifbench:
+    name: "mtacifbench"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/mtacifbench/data"
+    task_type: "benchmarks.mtacifbench.task.MTACIFBenchTask"
+    judge_config_path:
+      default: "benchmarks/mtacifbench/data/judge.yaml"
+      instruction_following: "benchmarks/mtacifbench/data/judge.yaml"
+
+agents:
+  claude_code:
+    type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+    offline: true
+    offline_package_dir: ${OFFLINE_PACKAGE_DIR}

@@ -1,0 +1,26 @@
+name: "demo-experiment"
+concurrency: 5
+output_dir: "./output"
+
+sandbox:
+  host: "localhost:8080"
+  request_timeout: 600
+
+models:
+  glm-5:
+    base_url: "https://open.bigmodel.cn/api/anthropic/"
+    api_key: "${ZHIPU_API_KEY}"
+    timeout: 10800
+    max_tokens: 32000
+
+datasets:
+  zbackendbench:
+    name: "zbackendbench"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/zbackendbench/data"
+    task_type: "benchmarks.zbackendbench.task.ZBackendBenchTask"
+    judge_config_path: "benchmarks/zbackendbench/data/judge.yaml"
+
+agents:
+  claude_code:
+    type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
