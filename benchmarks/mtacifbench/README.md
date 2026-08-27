@@ -133,9 +133,23 @@ constraint categories. Two things worth knowing before reading the data:
 ### Container images
 
 `docker` (the agent's sandbox) and `judge_docker` (the judge's sandbox) come from
-the question data. The dataset ships public images that work out of the box; to
-substitute your own, either edit the data or set `MTACIF_JUDGE_IMAGE`, which
-supplies the judge image for data that omits the field.
+the question data. Both images the dataset ships are public on Docker Hub and
+pull anonymously, so a clone plus a dataset pull is enough to run:
+
+| Field | Image | Compressed | Role |
+|---|---|---|---|
+| `docker` | `alexgshaw/break-filter-js-from-html:20251031` | 365 MB | web-dev sandbox the agent works in |
+| `judge_docker` | `dayong657/playwright-mcp-base:0.1.0` | 376 MB | sandbox the LLM judge runs in |
+
+```bash
+docker pull alexgshaw/break-filter-js-from-html:20251031
+docker pull dayong657/playwright-mcp-base:0.1.0
+```
+
+Both are `linux/amd64` only. To substitute your own, either edit the data or set
+`MTACIF_JUDGE_IMAGE`, which supplies the judge image for data that omits the
+field — there is deliberately no built-in default, so a missing image fails at
+load time rather than halfway through a run.
 
 ### Rebuilding from a private export
 
@@ -146,7 +160,7 @@ this benchmark loads:
 ```bash
 python scripts/build_mtacifbench_dataset.py \
   --src /path/to/export/questions.jsonl \
-  --judge-docker your-registry/playwright-mcp-base:0.1.0
+  --judge-docker dayong657/playwright-mcp-base:0.1.0
 ```
 
 The converter holds every tolerance for loose input and fails hard rather than
