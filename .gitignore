@@ -42,7 +42,24 @@ output/
 # uv
 uv.lock
 *.log
+
+# Benchmark question data is distributed separately (see README) -- except for
+# the two zbackendbench tasks the quick-start example runs, which are tracked so
+# a fresh clone can execute `examples/experiment.yaml` with nothing extra.
+# Each level is re-excluded before whitelisting, because git will not descend
+# into an ignored directory to find a negated file inside it.
 data/
+!benchmarks/zbackendbench/data/
+benchmarks/zbackendbench/data/*
+!benchmarks/zbackendbench/data/judge.yaml
+!benchmarks/zbackendbench/data/questions.jsonl
+!benchmarks/zbackendbench/data/tasks/
+benchmarks/zbackendbench/data/tasks/*
+!benchmarks/zbackendbench/data/tasks/challenge_003/
+!benchmarks/zbackendbench/data/tasks/dioxus_2/
+# Reference fixes stay out: the two tasks are meant to be run, not read.
+benchmarks/zbackendbench/data/tasks/*/solution/
+
 .vscode/
 .sandbox.toml
 .claude
@@ -51,3 +68,7 @@ data/
 run.sh
 run-*.sh
 *.pid
+
+# Written by scripts/init.sh
+.agentprobe-env
+.sandbox.log

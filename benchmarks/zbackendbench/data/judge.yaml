@@ -1,0 +1,16 @@
+model:
+  base_url: "https://open.bigmodel.cn/api/anthropic/"
+  api_key: "${ZHIPU_API_KEY}"
+  # Pins the judge model. ClaudeCodeAgent exports this as ANTHROPIC_MODEL and as
+  # the haiku/sonnet/opus defaults, so every tier the CLI may pick resolves here.
+  model_name: "glm-5"
+  format: "anthropic"
+  timeout: 10800
+  max_tokens: 32000
+
+agent:
+  type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+  # Install the CLI from the tarballs scripts/init.sh fetched, instead of
+  # running `npm i -g` inside every container.
+  offline: true
+  offline_package_dir: "${OFFLINE_PACKAGE_DIR}"

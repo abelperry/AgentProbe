@@ -1,8 +1,8 @@
 """Prompt templates for MTACIFBench.
 
-Copied from the chatglm-eval ``mtacifbench`` implementation so this benchmark
-can evolve independently. The judge template is the V4 revision: trusted
-checklist first, untrusted evidence last, plus a closing safety reminder.
+The judge template puts the trusted checklist first and the model-controlled
+evidence last, with a closing reminder, so a requirement forged inside that
+evidence cannot displace a real one.
 """
 
 # ruff: noqa: E501 - prompt text is reproduced verbatim; rewrapping changes it

@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Convert chatglm-eval MTACIFBench questions.jsonl to the AgentProbe format.
+"""Build the MTACIFBench question set from a looser source export.
 
-The output matches ``benchmarks.mtacifbench.models.MTACIFBenchQuestion`` exactly.
-Every tolerance for the upstream shape lives here, so the runtime models stay
-strict:
+The published dataset (see ``benchmarks/mtacifbench/README.md``) is already in
+the strict shape ``MTACIFBenchQuestion`` loads, so this script is only needed
+when you maintain your own copy of the source questions. Every tolerance for
+loose input lives here, which is what lets the runtime models stay strict:
 
 * ``rounds[*].instruction`` becomes ``rounds[*].prompt``.
-* Each constraint's ``validation_code`` is kept **on the constraint**. Upstream
-  also carries a parallel ``instruction_following_validation_codes[i][j]`` array
-  aligned by index; this script asserts the two agree and then drops the array,
-  which removes the whole class of index-misalignment bugs.
+* A constraint's ``validation_code`` is kept **on the constraint**. Sources that
+  also carry a parallel ``instruction_following_validation_codes[i][j]`` array
+  aligned by index get checked for agreement, then the array is dropped —
+  removing the whole class of index-misalignment bugs.
 * ``system_prompt_checklist`` is dropped: it is a prefix of each round's own
   checklist, and nothing scores it separately.
-* Container images are absent upstream (hardcoded defaults) and are materialised
-  into the output so the dataset is self-describing.
+* Container images missing from the source are materialised into the output, so
+  the dataset is self-describing.
 """
 
 from __future__ import annotations
@@ -136,7 +137,7 @@ def convert_record(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--src", required=True, help="upstream questions.jsonl")
+    parser.add_argument("--src", required=True, help="source questions.jsonl to convert")
     parser.add_argument(
         "--out",
         default="benchmarks/mtacifbench/data/questions.jsonl",

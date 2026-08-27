@@ -4,9 +4,10 @@ MTACIFBench measures multi-turn agentic-coding *instruction following*: the
 agent works several rounds in one workspace and one conversation, and each
 round is scored against that round's constraint checklist.
 
-The JSONL is expected to be the AgentProbe-native shape produced by
-``scripts/build_mtacifbench_dataset.py``; raw chatglm-eval compatibility lives
-in that script, not here.
+The JSONL is expected to be the shape published on the Hugging Face Hub (see
+``benchmarks/mtacifbench/README.md``). Tolerance for looser input lives in
+``scripts/build_mtacifbench_dataset.py``, not here, so a malformed row fails at
+load time rather than mid-run.
 """
 
 from __future__ import annotations
@@ -30,9 +31,9 @@ DEFAULT_JUDGE_DOCKER = os.environ.get("MTACIF_JUDGE_IMAGE", "")
 class IFConstraint(BaseModel):
     """One instruction-following constraint for one round.
 
-    ``validation_code`` is the dataset-supplied deterministic checker. It is
-    kept on the constraint itself — upstream carried it in a parallel array
-    aligned by index, which silently misaligns when the two lengths differ.
+    ``validation_code`` is the dataset-supplied deterministic checker, stored on
+    the constraint itself. Keeping it here rather than in a parallel array
+    aligned by index removes a whole class of silent misalignment.
     """
 
     constraint: str

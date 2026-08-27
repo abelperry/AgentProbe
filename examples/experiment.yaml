@@ -1,10 +1,15 @@
 name: "demo-experiment"
-concurrency: 5
+# Serial on purpose: the two bundled tasks ask for 8 and 10 cores, which do not
+# fit side by side on a 16-core host -- the second one then never gets scheduled
+# and dies on the request timeout instead.
+concurrency: 1
 output_dir: "./output"
 
 sandbox:
   host: "localhost:8080"
-  request_timeout: 600
+  # Covers creating a sandbox whose image still has to be pulled: dioxus_2's is
+  # 3.9 GB unpacked, and 600s is not enough for the first run.
+  request_timeout: 1800
 
 models:
   glm-5:
@@ -24,3 +29,7 @@ datasets:
 agents:
   claude_code:
     type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+    # Install the CLI from the tarballs scripts/init.sh fetched, instead of
+    # running `npm i -g` inside every container.
+    offline: true
+    offline_package_dir: "${OFFLINE_PACKAGE_DIR}"
