@@ -1,8 +1,4 @@
-"""MTACIFBench helpers: archive extraction, trace slicing, text utilities.
-
-Vendored from the chatglm-eval ``mtacifbench`` implementation so this benchmark
-can evolve independently.
-"""
+"""MTACIFBench helpers: archive extraction, trace slicing, text utilities."""
 
 from __future__ import annotations
 
@@ -86,11 +82,10 @@ def count_word(text: str) -> int:
 def _sentence_pattern() -> re.Pattern[str]:
     """Split on runs of CJK/ASCII sentence terminators.
 
-    Upstream used ``pysbd``, but that package installs its own top-level
-    ``benchmarks`` package, which collides with this repo's ``benchmarks``
-    namespace and shadows it (breaking every benchmark import). No constraint in
-    the dataset calls ``split_sentences``, so a small CJK-oriented splitter is
-    used instead of taking that dependency.
+    Deliberately hand-rolled rather than pulling in ``pysbd``: that package ships
+    its own top-level ``benchmarks`` module, which shadows this repo's
+    ``benchmarks`` package and breaks every benchmark import. No constraint in
+    the dataset calls ``split_sentences``, so the dependency buys nothing.
     """
     return re.compile(r"[^。！？!?…；;]*?[。！？!?…；;]+|[^。！？!?…；;]+")
 

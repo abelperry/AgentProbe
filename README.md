@@ -34,7 +34,15 @@ src/agent_probe/
   cli/
     main.py              # CLI entry point
 
+docs/
+  mtacifbench-design.md  # what MTACIFBench measures and how it is scored
+
 benchmarks/              # Benchmark definitions (outside src/)
+  mtacifbench/
+    models.py            # MTACIFBenchQuestion, Inference, Judgement
+    task.py              # MTACIFBenchTask (multi-turn, one conversation)
+    validation.py        # dataset-supplied deterministic checkers
+    README.md            # scoring, metrics, artifacts, dataset
   zbackendbench/
     models.py            # ZBackendBenchQuestion, Inference, Judgement
     task.py              # ZBackendBenchTask
@@ -98,14 +106,34 @@ benchmarks/<bench>/
 Two things therefore have to come from your own environment before a benchmark
 can run:
 
-**1. Question data.** Datasets are published separately, per benchmark, and the
-pull mechanism is not part of this release yet. Until it lands, point
-`datasets.<name>.data_dir` in your experiment YAML at wherever you keep the
-data, or drop a `questions.jsonl` into `benchmarks/<bench>/data/`. The expected
-shape is the benchmark's `Question` model in `models.py` — strict, so a
-malformed row fails loudly at load time rather than mid-run. Where a converter
-exists (`scripts/build_*_dataset.py`), it turns an upstream export into that
-shape and validates it.
+**1. Question data.** Datasets are published one Hugging Face dataset repo per
+benchmark, and each repo maps 1:1 into `benchmarks/<bench>/data/`:
+
+```bash
+uv pip install huggingface_hub
+
+# pull one benchmark
+python scripts/pull_benchmarks.py --org AbelNexux mtacifbench
+
+# or every benchmark hosted by an org/user
+python scripts/pull_benchmarks.py --org your-org
+
+# or point a single benchmark at any repo id
+python scripts/pull_benchmarks.py --repo swebench=princeton-nlp/SWE-bench_Verified
+```
+
+| Benchmark | Dataset | Status |
+|---|---|---|
+| `mtacifbench` | [AbelNexux/mtacifbench](https://huggingface.co/datasets/AbelNexux/mtacifbench) | published |
+| others | — | not published yet |
+
+Pass `--revision <sha>` to pin a dataset when results need to be reproducible.
+For a benchmark whose data is not published, point `datasets.<name>.data_dir` at
+wherever you keep it, or drop a `questions.jsonl` into
+`benchmarks/<bench>/data/`. The expected shape is that benchmark's `Question`
+model in `models.py` — strict, so a malformed row fails loudly at load time
+rather than mid-run. Where a converter exists (`scripts/build_*_dataset.py`), it
+turns a looser export into that shape and validates it.
 
 **2. Container images.** Both the inference image and, for benchmarks that use
 an agent-as-judge, the judge image are deployment-specific. They are read from
