@@ -108,6 +108,22 @@ sandbox_up() {
     [ "$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ 2>/dev/null)" != "000" ]
 }
 
+# The offline package directory is bind-mounted into every sandbox, so it has to
+# be on the server's allowlist. The server reads its config once, at startup, so
+# this is only worth doing on the path where we are about to launch it.
+allow_offline_dir() {
+    # An empty list means "allow every host path"; leave it alone.
+    grep -qE '^[[:space:]]*allowed_host_paths[[:space:]]*=[[:space:]]*\[[[:space:]]*\]' \
+        "$SANDBOX_CONFIG" && return 0
+    grep -qE '^[[:space:]]*allowed_host_paths[[:space:]]*=' "$SANDBOX_CONFIG" || return 0
+    grep -qF "\"$OFFLINE_DIR\"" "$SANDBOX_CONFIG" && return 0
+
+    sed "s|^\([[:space:]]*allowed_host_paths[[:space:]]*=[[:space:]]*\[\)|\1\"$OFFLINE_DIR\", |" \
+        "$SANDBOX_CONFIG" > "$SANDBOX_CONFIG.tmp" \
+        && mv "$SANDBOX_CONFIG.tmp" "$SANDBOX_CONFIG"
+    say "added $OFFLINE_DIR to allowed_host_paths in $SANDBOX_CONFIG"
+}
+
 if sandbox_up; then
     say "sandbox server already listening on 127.0.0.1:8080"
 else
@@ -118,6 +134,7 @@ else
         say "generating $SANDBOX_CONFIG"
         uv run opensandbox-server init-config "$SANDBOX_CONFIG" --example docker >/dev/null
     fi
+    allow_offline_dir
 
     # Without an api_key the server demands an explicit acknowledgment, which
     # would block forever with no TTY attached.
@@ -135,32 +152,6 @@ else
     done
     sandbox_up || die "the sandbox server did not come up within 60s -- see $SANDBOX_LOG"
     say "sandbox server up (pid $(cat "$SANDBOX_PID"); stop with: kill \$(cat $SANDBOX_PID))"
-fi
-
-# The offline packages are bind-mounted into every sandbox, so a narrowed
-# allowlist refuses the mount. It matches on path *prefix*, so an entry that is
-# any ancestor of the package dir is enough.
-if ! python3 - "$SANDBOX_CONFIG" "$OFFLINE_DIR" <<'PY'
-import re, sys, os
-try:
-    text = open(sys.argv[1]).read()
-except OSError:
-    sys.exit(0)                                  # no config yet -- nothing to check
-match = re.search(r'^\s*allowed_host_paths\s*=\s*\[(.*?)\]', text, re.M | re.S)
-if not match:
-    sys.exit(0)
-allowed = re.findall(r'"([^"]+)"', match.group(1))
-if not allowed:
-    sys.exit(0)                                  # empty list means "allow everything"
-target = os.path.realpath(sys.argv[2])
-sys.exit(0 if any(
-    target == os.path.realpath(p) or target.startswith(os.path.realpath(p).rstrip("/") + "/")
-    for p in allowed
-) else 1)
-PY
-then
-    warn "$SANDBOX_CONFIG narrows allowed_host_paths and no entry covers"
-    warn "$OFFLINE_DIR -- the read-only package mount will be refused."
 fi
 
 # ---------------------------------------------------------------------------
