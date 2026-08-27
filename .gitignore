@@ -68,3 +68,7 @@ benchmarks/zbackendbench/data/tasks/*/solution/
 run.sh
 run-*.sh
 *.pid
+
+# Written by scripts/init.sh
+.agentprobe-env
+.sandbox.log

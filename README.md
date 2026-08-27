@@ -34,6 +34,11 @@ src/agent_probe/
   cli/
     main.py              # CLI entry point
 
+scripts/
+  init.sh                # one-shot setup: sandbox server + offline agent packages
+  pull_benchmarks.py     # fetch question data from the Hugging Face Hub
+  build_*_dataset.py     # convert a loose export into a benchmark's strict shape
+
 docs/
   mtacifbench-design.md  # what MTACIFBench measures and how it is scored
 
@@ -76,24 +81,41 @@ are public on Docker Hub. Nothing else has to be downloaded first.
 ### 1. Install dependencies
 
 ```bash
-git clone <repo-url> && cd AgentProbe
+git clone https://github.com/abelperry/AgentProbe.git && cd AgentProbe
 uv sync
 ```
 
-### 2. Start the OpenSandbox server
-
-Every inference and judge run executes inside a sandbox, so this has to be up
-before any evaluation:
+### 2. Initialise
 
 ```bash
-uv pip install opensandbox-server
-opensandbox-server init-config .sandbox.toml --example docker
-opensandbox-server --config .sandbox.toml
+./scripts/init.sh
 ```
+
+This does the two things every run needs and prints the command to launch the
+example. It is safe to re-run — an existing package is verified against the
+registry checksum and reused, and an already-running server is left alone.
+
+- **Fetches the offline agent package.** Configs install the Claude Code CLI
+  from a local tarball rather than running `npm i -g` inside every container: a
+  benchmark that starts a container per round hits `ECONNRESET` otherwise, and
+  judge images have no npm to fall back on. Downloaded with `curl` and checked
+  against the registry's own sha512, so the host needs no Node at all. Pass
+  `--musl` if your sandbox images are Alpine-based.
+- **Starts the OpenSandbox server.** Generates `.sandbox.toml` from the packaged
+  docker example if absent, launches the server in the background
+  (`.sandbox.log`, `.sandbox.pid`) and waits for the port. Without an API key the
+  server demands an interactive acknowledgment before it will start; the script
+  supplies it, which is why `opensandbox-server` should not just be run by hand
+  from a script or CI.
+
+It also warns if `.sandbox.toml` narrows `allowed_host_paths` to something that
+does not cover the package directory — that mount is how the CLI reaches the
+sandbox, and the failure is otherwise reported as an install error.
 
 ### 3. Run the example
 
 ```bash
+source .agentprobe-env                    # exports OFFLINE_PACKAGE_DIR
 export ZHIPU_API_KEY="your-api-key"       # referenced by examples/experiment.yaml
 
 uv run agentprobe -c examples/experiment.yaml -l info
@@ -104,9 +126,10 @@ uv run agentprobe -c examples/experiment.yaml -l info
 running its test script inside the container, so a pass here means the whole
 pipeline — sandbox, agent install, inference, verification, metrics — works.
 
-If your OpenSandbox server requires authentication, add `api_key: "${SANDBOX_KEY}"`
-under `sandbox:` and export `SANDBOX_KEY`; a local server started as above needs
-neither.
+Container images are pulled on demand from the `docker` field in the question
+data, so the first run spends a few minutes on that. If your OpenSandbox server
+requires authentication, add `api_key: "${SANDBOX_KEY}"` under `sandbox:` and
+export `SANDBOX_KEY`; a server started by `init.sh` needs neither.
 
 Results land under `output/`:
 
@@ -123,9 +146,10 @@ retries only the failures.
 
 ## Running a full benchmark
 
-The quick start works out of the box because its data is small enough to track
-in git. Every other benchmark needs three things supplied before you can run it,
-plus a config that ties them together. Do them in this order.
+The quick start works out of the box because its data is small enough to track in
+git. Every other benchmark needs its questions fetched and a config written.
+`scripts/init.sh` has already covered the sandbox server and the agent packages,
+so there are two steps left.
 
 Benchmark **code** lives here; benchmark **data** does not. Every
 `benchmarks/<bench>/data/` directory is git-ignored (the two zbackendbench tasks
@@ -171,55 +195,14 @@ model in `models.py` — strict, so a malformed row fails loudly at load time
 rather than mid-run. Where a converter exists (`scripts/build_*_dataset.py`), it
 turns a looser export into that shape and validates it.
 
-### 2. Container images
+Container images come from the question data (`docker`, and `judge_docker` where
+the benchmark uses an agent-as-judge) and are pulled on demand. There are
+deliberately **no built-in defaults** — a hardcoded registry path would make a
+benchmark silently unusable outside the network it was written in. The published
+datasets reference public images; if yours are private, log the OpenSandbox host
+in to that registry first.
 
-Both the inference image and, for benchmarks that use an agent-as-judge, the
-judge image are read from the question data (`docker` / `judge_docker`) with
-environment-variable fallbacks. There are deliberately **no built-in defaults** —
-a hardcoded registry path would make the benchmark silently unusable outside the
-network it was written in.
-
-The published datasets reference public images, so `docker pull` needs no
-credentials. If yours live in a private registry, make sure the OpenSandbox host
-is logged in to it before starting a run.
-
-### 3. Offline agent packages
-
-Only needed for configs with `offline: true`. These install the Claude Code CLI
-from a host directory instead of running `npm i -g` inside the sandbox.
-MTACIFBench's judge config uses this: it starts one judge container per round, an
-online install at that rate hits `ECONNRESET`, and the judge image has no npm to
-fall back on.
-
-Populate the directory with `npm pack`, which downloads a package's tarball
-without installing it. The filenames it produces are exactly what the installer
-looks for:
-
-```bash
-mkdir -p data/offline_package && cd data/offline_package
-
-# glibc images (almost certainly what you want)
-npm pack @anthropic-ai/claude-code-linux-x64@2.1.199
-
-# musl images (Alpine) — only if your sandbox image is one
-npm pack @anthropic-ai/claude-code-linux-x64-musl@2.1.199
-
-export OFFLINE_PACKAGE_DIR=$PWD   # ~148 MB for both
-```
-
-The version must match `agent.version` in the config that will use it — the
-shipped `benchmarks/mtacifbench/data/judge.yaml` pins `2.1.199`. AgentProbe
-mounts the directory read-only at `/mnt/offline_package` in every sandbox, picks
-`x64` or `x64-musl` by testing for `/lib/ld-musl-x86_64.so.1`, extracts
-`package/claude` from the matching tarball and puts it on `PATH`. A missing
-archive fails immediately with the exact path it looked for.
-
-Nothing else in the directory is read: the CLI ships as a self-contained native
-binary, so no Node runtime and no `@anthropic-ai/claude-code` wrapper package are
-needed. If your sandboxes can reach the npm registry, drop `offline: true` and
-skip all of this.
-
-### 4. Write the experiment config
+### 2. Write the experiment config
 
 An experiment config is a YAML file describing what to run against what. The
 shipped `examples/*.yaml` are working references; `examples/experiment.yaml` is
@@ -291,11 +274,17 @@ Variables the shipped configs expect:
 Keep these in a launcher script — `run.sh` and `run-*.sh` are git-ignored for
 exactly this reason.
 
-### 5. Run
+### 3. Run
 
 ```bash
 uv run agentprobe -c examples/exp-mtacifbench.yaml -l info
 ```
+
+The offline tarball has to match `agent.version` in the config. `init.sh` pins
+the same version the code defaults to, so this only matters if you change the
+pin — and a mismatch fails immediately with the path it looked for, rather than
+silently installing something else. Alpine-based sandbox images need
+`./scripts/init.sh --musl`.
 
 
 ## Creating a New Benchmark
@@ -388,7 +377,7 @@ Create `data/questions.jsonl` with one JSON object per line. Each line **must** 
 ### 5. Add to experiment config
 
 Add the dataset to a config file — see
-[Write the experiment config](#4-write-the-experiment-config) for the full
+[Write the experiment config](#2-write-the-experiment-config) for the full
 anatomy. The dataset block is the only part specific to a new benchmark:
 
 ```yaml

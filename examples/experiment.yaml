@@ -24,3 +24,7 @@ datasets:
 agents:
   claude_code:
     type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+    # Install the CLI from the tarballs scripts/init.sh fetched, instead of
+    # running `npm i -g` inside every container.
+    offline: true
+    offline_package_dir: "${OFFLINE_PACKAGE_DIR}"
