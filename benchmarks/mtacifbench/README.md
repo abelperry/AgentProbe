@@ -188,5 +188,5 @@ npm pack @anthropic-ai/claude-code-linux-x64-musl@2.1.199   # musl images only
 ```
 
 The version has to match `agent.version` in `judge.yaml`. See
-[the root README](../../README.md#benchmark-datasets-and-images) for what the
-sandbox does with these at install time.
+[the root README](../../README.md#3-offline-agent-packages) for what the sandbox
+does with these at install time.

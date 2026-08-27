@@ -1,0 +1,23 @@
+version = "1.0"
+
+[metadata]
+author_name = "Fangzhou Yi"           # 作者姓名
+author_email = "your@email.com"     # 作者邮箱
+difficulty = "easy"                 # 难度级别：easy / medium / hard
+category = "software-engineering"   # 类别
+tags = ["python", "async", "coding"]  # 标签列表
+expert_time_estimate_min = 30.0     # 专家预估完成时间（分钟）
+junior_time_estimate_min = 120.0    # 初级开发者预估时间（分钟）
+
+[verifier]
+timeout_sec = 1800.0                 # 验证超时时间（秒）
+
+[agent]
+timeout_sec = 1800.0                 # Agent 执行超时时间（秒）
+
+[environment]
+build_timeout_sec = 600.0           # Docker 构建超时（秒）
+docker_image = "jianjiao0318/cc-bench:challenges_0.2"  # Docker 镜像地址
+cpus = 8                            # CPU 限制
+memory = "4G"                       # 内存限制
+storage = "10G"                     # 存储限制

@@ -1,0 +1,12 @@
+model:
+  base_url: "https://open.bigmodel.cn/api/anthropic/"
+  api_key: "${ZHIPU_API_KEY}"
+  timeout: 10800
+  max_tokens: 32000
+
+agent:
+  type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+  model_mapping:
+    haiku: "glm-5"
+    sonnet: "glm-5"
+    opus: "glm-5"
