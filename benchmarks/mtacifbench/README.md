@@ -172,5 +172,21 @@ task ids, and empty instructions are all errors, not warnings. Useful flags:
 
 ```bash
 export ZHIPU_API_KEY=... GATEWAY_API_KEY=... SANDBOX_KEY=...
+export OFFLINE_PACKAGE_DIR=/path/to/offline_package
 uv run agentprobe -c examples/exp-mtacifbench.yaml -l debug
 ```
+
+`OFFLINE_PACKAGE_DIR` is needed because `judge.yaml` sets `offline: true` — this
+benchmark starts one judge container per round, and an online `npm i -g` at that
+rate hits `ECONNRESET` (the judge image has no npm to fall back on either). Fill
+the directory with two `npm pack` tarballs:
+
+```bash
+mkdir -p data/offline_package && cd data/offline_package
+npm pack @anthropic-ai/claude-code-linux-x64@2.1.199        # glibc images
+npm pack @anthropic-ai/claude-code-linux-x64-musl@2.1.199   # musl images only
+```
+
+The version has to match `agent.version` in `judge.yaml`. See
+[the root README](../../README.md#benchmark-datasets-and-images) for what the
+sandbox does with these at install time.

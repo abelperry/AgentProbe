@@ -103,7 +103,7 @@ benchmarks/<bench>/
     judge.yaml              # agent-as-judge config, where the bench uses one
 ```
 
-Two things therefore have to come from your own environment before a benchmark
+Three things therefore have to come from your own environment before a benchmark
 can run:
 
 **1. Question data.** Datasets are published one Hugging Face dataset repo per
@@ -142,12 +142,45 @@ fallbacks, and there are deliberately **no built-in defaults** — a hardcoded
 registry path would make the benchmark silently unusable outside the network it
 was written in.
 
+**3. Offline agent packages** — only for configs with `offline: true`. These
+install the Claude Code CLI from a host directory instead of running `npm i -g`
+inside the sandbox. MTACIFBench's judge config uses this: it starts one judge
+container per round, an online install at that rate hits `ECONNRESET`, and the
+judge image has no npm to fall back on.
+
+Populate the directory with `npm pack` — the filenames the installer looks for
+are exactly what npm produces for these packages:
+
+```bash
+mkdir -p data/offline_package && cd data/offline_package
+
+# glibc images (almost certainly what you want)
+npm pack @anthropic-ai/claude-code-linux-x64@2.1.199
+
+# musl images (Alpine) — only if your sandbox image is one
+npm pack @anthropic-ai/claude-code-linux-x64-musl@2.1.199
+
+export OFFLINE_PACKAGE_DIR=$PWD   # ~148 MB for both
+```
+
+The version must match `agent.version` in the config that will use it — the
+shipped `benchmarks/mtacifbench/data/judge.yaml` pins `2.1.199`. AgentProbe
+mounts the directory read-only at `/mnt/offline_package` in every sandbox, picks
+`x64` or `x64-musl` by testing for `/lib/ld-musl-x86_64.so.1`, extracts
+`package/claude` from the matching tarball and puts it on `PATH`. A missing
+archive fails immediately with the exact path it looked for.
+
+Nothing else in the directory is read: the native binary is self-contained, so
+no Node runtime and no `@anthropic-ai/claude-code` wrapper package are needed.
+If your sandboxes can reach the npm registry, drop `offline: true` and skip all
+of this.
+
 Environment variables the shipped configs expect:
 
 | Variable | Used for |
 |---|---|
 | `GATEWAY_BASE_URL` | Base URL of your model gateway (`examples/*.yaml`, judge configs) |
-| `OFFLINE_PACKAGE_DIR` | Host dir holding agent install tarballs when `offline: true` |
+| `OFFLINE_PACKAGE_DIR` | Host dir holding the `npm pack` tarballs above, when `offline: true` |
 | `HTTP_PROXY_URL`, `NO_PROXY_HOSTS` | Egress proxy for sandboxes that need one |
 | `MTACIF_JUDGE_IMAGE`, `MRCC_JUDGE_IMAGE`, `ZFRONT_JUDGE_IMAGE`, `DEFAULT_PLAYWRIGHT_IMAGE`, `DEFAULT_INFER_IMAGE`, `DEFAULT_EVAL_IMAGE` | Fallback images when the data omits them |
 | `SWEBENCH_PRO_IMAGE_REPO` | Registry holding the SWE-bench Pro instance images |
