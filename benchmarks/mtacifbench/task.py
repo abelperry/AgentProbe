@@ -23,6 +23,10 @@ from agent_probe.config import JudgeConfig
 from agent_probe.core.models import Error
 from agent_probe.core.sandbox import ExecResult, Sandbox, SandboxResult, SandboxSpec
 from agent_probe.core.task import BaseTask
+from benchmarks.mtacifbench.function_eval import (
+    evaluate_function_checklist,
+    skipped_function_evaluation,
+)
 from benchmarks.mtacifbench.models import (
     IFCheckResult,
     IFConstraint,
@@ -411,6 +415,29 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         all_passed = bool(round_results) and all(
             item.passed and not item.parse_failed for item in round_results
         )
+
+        # Functional evaluation is a separate, opt-in pass over the same
+        # workspace. It never touches the instruction-following verdict above:
+        # a task can obey every constraint while building something broken, and
+        # the two numbers are supposed to be readable apart.
+        #
+        # A task the dataset gave no functional requirements is skipped without
+        # consulting the config at all — there is nothing to evaluate, and
+        # counting it as an evaluated-but-failing task would drag ISR down.
+        enabled = bool(question.function_checklist) and (
+            self._get_judge_config(ctx).function_checklist_eval_enabled
+        )
+        if enabled:
+            function_outcome = await evaluate_function_checklist(
+                question=question,
+                inference_result=inference_result,
+                ctx=ctx,
+                judge_config=self._get_judge_config(ctx),
+                eval_dir=eval_dir,
+            )
+        else:
+            function_outcome = skipped_function_evaluation(question)
+
         return MTACIFBenchJudgement(
             category=question.category,
             instruction_following_checks=round_results,
@@ -418,6 +445,10 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             total_rounds=len(question.rounds),
             round_summaries=self._build_round_summaries(inference_result, round_results),
             response=inference_result.response,
+            function_checklist_skipped=function_outcome.function_checklist_skipped,
+            function_checks=function_outcome.checks,
+            function_score=function_outcome.weighted_score,
+            build_success=function_outcome.build_success,
             error=Error(
                 code=-1,
                 message=f"instruction_following verdict unresolved for rounds {unresolved}",
@@ -884,11 +915,53 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             if rounds and all(item.passed for item in rounds):
                 strict_pass += 1
 
-        return {
+        metrics = {
             "IFSSR": strict_pass / len(valid) * 100 if valid else 0.0,
             "IFISR": passed_rounds / total_rounds * 100 if total_rounds else 0.0,
             "IFCSR": passed_constraints / total_constraints * 100 if total_constraints else 0.0,
             "num_strict_pass": float(strict_pass),
             "num_rounds": float(total_rounds),
             "num_constraints": float(total_constraints),
-        }, len(valid)
+        }
+        metrics.update(self._function_metrics(valid))
+        return metrics, len(valid)
+
+    @staticmethod
+    def _function_metrics(valid: list[MTACIFBenchJudgement]) -> dict[str, float]:
+        """Functional metrics, reported only over tasks that were actually evaluated.
+
+        A task whose functional pass was skipped -- switch off, or no checklist
+        in the data -- is absent from every denominator here. Folding it in as a
+        zero would make turning the switch off look like the product regressed.
+        Checks with ``score is None`` are excluded for the same reason: they are
+        checks that never ran.
+        """
+        evaluated = [item for item in valid if not item.function_checklist_skipped]
+        if not evaluated:
+            return {}
+
+        scored = [
+            check
+            for judgement in evaluated
+            for check in judgement.function_checks
+            if check.score is not None
+        ]
+        passed_checks = sum(1 for check in scored if check.passed)
+        # A task counts as a functional pass only if it had checks and every one
+        # of them produced a passing verdict.
+        clean_tasks = sum(
+            1
+            for judgement in evaluated
+            if judgement.function_checks
+            and all(check.score == 1.0 for check in judgement.function_checks)
+        )
+        built = [item for item in evaluated if item.build_success is not None]
+        return {
+            "ISR": clean_tasks / len(evaluated) * 100,
+            "CSR": passed_checks / len(scored) * 100 if scored else 0.0,
+            "BSR": sum(1 for item in built if item.build_success) / len(built) * 100
+            if built
+            else 0.0,
+            "num_function_tasks": float(len(evaluated)),
+            "num_function_checks": float(len(scored)),
+        }

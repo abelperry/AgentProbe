@@ -13,6 +13,10 @@ loose input lives here, which is what lets the runtime models stay strict:
   removing the whole class of index-misalignment bugs.
 * ``system_prompt_checklist`` is dropped: it is a prefix of each round's own
   checklist, and nothing scores it separately.
+* ``function_checklist`` is kept and normalised. It is scored per task rather
+  than per round, and only when the judge config enables functional evaluation
+  -- but whether a task has functional requirements belongs to the dataset, not
+  to a run's configuration.
 * Container images missing from the source are materialised into the output, so
   the dataset is self-describing.
 """
@@ -115,6 +119,41 @@ def convert_rounds(record: dict[str, Any], task_id: str) -> list[dict[str, Any]]
     return rounds
 
 
+def convert_function_checklist(record: dict[str, Any], task_id: str) -> list[dict[str, Any]]:
+    """Normalise the functional checklist, which is scored per task, not per round.
+
+    Kept even when functional evaluation is switched off: whether a task *has*
+    functional requirements is a property of the dataset, and dropping them here
+    would make the switch a no-op for anyone using the published data.
+    """
+    raw = record.get("function_checklist")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"{task_id}: function_checklist is not a list")
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for position, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{task_id}: function_checklist[{position}] is not an object")
+        description = str(entry.get("description") or entry.get("描述") or "").strip()
+        if not description:
+            raise ValueError(f"{task_id}: function_checklist[{position}] has no description")
+        checklist_id = entry.get("checklist_id", entry.get("id", position))
+        if str(checklist_id) in seen:
+            raise ValueError(f"{task_id}: duplicate function checklist id {checklist_id!r}")
+        seen.add(str(checklist_id))
+        items.append(
+            {
+                "checklist_id": checklist_id,
+                "description": description,
+                "weight": float(entry.get("weight", 1.0)),
+            }
+        )
+    return items
+
+
 def convert_record(
     record: dict[str, Any],
     infer_docker: str,
@@ -131,7 +170,9 @@ def convert_record(
         "workspace_dir": str(record.get("workspace_dir") or "/workspace"),
         "description": str(record.get("description") or ""),
         "system_prompt": str(record.get("system_prompt") or "").strip(),
+        "task_category": str(record.get("task_category") or ""),
         "rounds": convert_rounds(record, task_id),
+        "function_checklist": convert_function_checklist(record, task_id),
     }
 
 

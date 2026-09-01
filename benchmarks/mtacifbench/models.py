@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent_probe.core.models import BaseInference, BaseJudgement, BaseQuestion, Error
 
@@ -56,6 +56,27 @@ class MTACIFRound(BaseModel):
     instruction_following_checklist: list[IFConstraint] = Field(default_factory=list)
 
 
+class FunctionChecklistItem(BaseModel):
+    """One user-visible functional requirement for the finished workspace.
+
+    Unlike an ``IFConstraint`` these are about the product, not the process:
+    "hovering a status light shows a tooltip". They are scored once per task
+    against the built and served application, never per round.
+    """
+
+    checklist_id: int | str
+    description: str
+    weight: float = 1.0
+
+    @field_validator("description")
+    @classmethod
+    def _reject_empty_description(cls, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("function checklist description must not be empty")
+        return text
+
+
 class MTACIFBenchQuestion(BaseQuestion):
     """One prepared MTACIFBench instance."""
 
@@ -66,6 +87,16 @@ class MTACIFBenchQuestion(BaseQuestion):
     description: str = ""
     system_prompt: str = ""
     rounds: list[MTACIFRound]
+    # Scored only when the judge config enables functional evaluation. Empty for
+    # a task the dataset never wrote functional requirements for -- which is a
+    # coverage fact, not a zero.
+    function_checklist: list[FunctionChecklistItem] = Field(default_factory=list)
+    task_category: str = ""
+    # Functional evaluation serves the built workspace and drives a browser.
+    # "file" is the fallback for a project with no HTTP entry point at all.
+    test_mode: Literal["http", "file"] = "http"
+    http_port: int = 5173
+    http_build_timeout: int = 600
     task_description_for_judge: str | None = None
     categories: list[str] = Field(default_factory=lambda: ["mtacifbench", "agent", "multi_round"])
     eval_timeout: int = 3600
@@ -152,8 +183,39 @@ class IFRoundResult(BaseModel):
     result_ref: str = ""
 
 
+class FunctionCheckResult(BaseModel):
+    """Verdict for one function checklist item.
+
+    ``score`` is deliberately nullable and deliberately binary. ``None`` means
+    the check never produced a verdict (build failed, browser died) and must be
+    left out of the denominator; a partial credit value would let a broken
+    environment read as a half-working product.
+    """
+
+    checklist_id: int | str
+    description: str
+    weight: float = 1.0
+    score: float | None = None
+    reason: str = ""
+    evaluation_error: Error | None = None
+
+    @field_validator("score")
+    @classmethod
+    def _reject_partial_credit(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        score = float(value)
+        if score not in {0.0, 1.0}:
+            raise ValueError("function checklist score must be 0, 1, or null")
+        return score
+
+    @property
+    def passed(self) -> bool:
+        return self.score == 1.0
+
+
 class MTACIFBenchJudgement(BaseJudgement):
-    """Instruction-following judgement for one task."""
+    """Instruction-following judgement for one task, plus optional functional."""
 
     category: str = "mtacifbench"
     instruction_following_checks: list[IFRoundResult] = Field(default_factory=list)
@@ -161,3 +223,11 @@ class MTACIFBenchJudgement(BaseJudgement):
     total_rounds: int = 0
     round_summaries: list[dict[str, object]] = Field(default_factory=list)
     response: str = ""
+
+    # Functional evaluation. ``function_checklist_skipped`` stays True unless
+    # the run actually built and inspected the workspace, so a disabled switch
+    # is never mistaken for "the product failed every check".
+    function_checklist_skipped: bool = True
+    function_checks: list[FunctionCheckResult] = Field(default_factory=list)
+    function_score: float = 0.0
+    build_success: bool | None = None

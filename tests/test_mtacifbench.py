@@ -657,11 +657,25 @@ def _judge_sandbox_result(text: str) -> Any:
 
 
 class _FakeEvalContext:
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(self, output_dir: Path, judge_config_path: str = "") -> None:
         self.output_dir = output_dir
+        # judge() reads the judge config to decide whether functional evaluation
+        # is switched on, so the fake has to carry one.
+        self.dataset_config = _FakeDatasetConfig(
+            judge_config_path or "benchmarks/mtacifbench/data/judge.yaml"
+        )
 
     def log_tag(self) -> str:
         return "test|model"
+
+
+class _FakeDatasetConfig:
+    def __init__(self, judge_config_path: str) -> None:
+        self._judge_config_path = judge_config_path
+
+    def get_judge_config_path(self, method: str = "default") -> str:
+        del method
+        return self._judge_config_path
 
 
 @requires_validation_deps
@@ -1185,3 +1199,106 @@ def test_validation_code_accepts_a_relative_workspace_path(
     monkeypatch.chdir(tmp_path)
     assert run_validation_code(code, "", Path("out/snap"), timeout=60) is True
     assert run_validation_code(code, "", workspace, timeout=60) is True
+
+
+# ---------------------------------------------------------------------------
+# Functional checklist switch
+# ---------------------------------------------------------------------------
+def _function_judgement(
+    *, skipped: bool, scores: list[float | None], build_success: bool | None = True
+) -> MTACIFBenchJudgement:
+    from benchmarks.mtacifbench.models import FunctionCheckResult
+
+    return MTACIFBenchJudgement(
+        instruction_following_checks=[
+            IFRoundResult(
+                round_id=0,
+                passed=True,
+                check_results=[
+                    IFCheckResult(index=1, requirement="r", conclusion=PASS_CONCLUSION)
+                ],
+            )
+        ],
+        total_rounds=1,
+        function_checklist_skipped=skipped,
+        build_success=build_success,
+        function_checks=[
+            FunctionCheckResult(checklist_id=i, description=f"c{i}", score=score)
+            for i, score in enumerate(scores)
+        ],
+    )
+
+
+def test_a_skipped_functional_pass_reports_no_functional_metrics() -> None:
+    """Switching the pass off must not look like the product failed every check."""
+    task = MTACIFBenchTask()
+    metrics, valid = task.collect_metrics(
+        [_function_judgement(skipped=True, scores=[None, None])]
+    )
+
+    assert valid == 1
+    assert metrics["IFCSR"] == 100.0
+    assert "ISR" not in metrics
+    assert "CSR" not in metrics
+    assert "BSR" not in metrics
+
+
+def test_functional_metrics_ignore_checks_that_never_ran() -> None:
+    """score=None means "no verdict"; folding it in as 0 would blame the model."""
+    task = MTACIFBenchTask()
+    metrics, _ = task.collect_metrics(
+        [_function_judgement(skipped=False, scores=[1.0, 0.0, None])]
+    )
+
+    # Two checks produced a verdict, one of them passing.
+    assert metrics["num_function_checks"] == 2.0
+    assert metrics["CSR"] == 50.0
+    # The task is not a clean pass: one of its checks failed.
+    assert metrics["ISR"] == 0.0
+    assert metrics["BSR"] == 100.0
+
+
+def test_a_task_passes_functionally_only_when_every_check_passed() -> None:
+    task = MTACIFBenchTask()
+    metrics, _ = task.collect_metrics(
+        [
+            _function_judgement(skipped=False, scores=[1.0, 1.0]),
+            _function_judgement(skipped=False, scores=[1.0, 0.0]),
+        ]
+    )
+
+    assert metrics["ISR"] == 50.0
+    assert metrics["CSR"] == 75.0
+    assert metrics["num_function_tasks"] == 2.0
+
+
+def test_failed_builds_lower_bsr_without_inventing_check_verdicts() -> None:
+    task = MTACIFBenchTask()
+    metrics, _ = task.collect_metrics(
+        [
+            _function_judgement(skipped=False, scores=[1.0], build_success=True),
+            _function_judgement(skipped=False, scores=[None], build_success=False),
+        ]
+    )
+
+    assert metrics["BSR"] == 50.0
+    # The unbuilt task contributes no check verdicts at all.
+    assert metrics["num_function_checks"] == 1.0
+    assert metrics["CSR"] == 100.0
+
+
+def test_skipped_evaluation_records_a_reason_rather_than_a_zero() -> None:
+    from benchmarks.mtacifbench.function_eval import skipped_function_evaluation
+    from benchmarks.mtacifbench.models import FunctionChecklistItem
+
+    question = _mixed_round_question()
+    question.function_checklist = [
+        FunctionChecklistItem(checklist_id=0, description="页面顶部有大标题")
+    ]
+
+    outcome = skipped_function_evaluation(question)
+
+    assert outcome.function_checklist_skipped is True
+    assert outcome.build_success is None
+    assert [check.score for check in outcome.checks] == [None]
+    assert "disabled" in outcome.checks[0].reason

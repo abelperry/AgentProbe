@@ -6,10 +6,10 @@ round's constraint checklist — not against the feature it built.
 
 ## What is scored
 
-The score comes **entirely from instruction following**. There is no build step,
-no HTTP server, no functional checklist. Whether the software works is a
-different question, measured by other benchmarks; this one isolates whether the
-agent obeyed what it was told while building it.
+By default the score comes **entirely from instruction following**: no build, no
+HTTP server, no browser. Whether the software works is a separate question, and
+keeping it separate is the point — a task can obey every constraint while
+building something broken, and you want to read those two facts apart.
 
 Each constraint is decided one of two ways:
 
@@ -22,6 +22,39 @@ A checker that times out, crashes, cannot be resolved to an entry point, or
 returns a non-bool **falls back to the judge**. It never scores the constraint 0
 — a broken checker is our problem, not the model's.
 
+### Functional evaluation (off by default)
+
+The dataset also carries a `function_checklist` per task: user-visible
+requirements like "hovering a status light shows a tooltip". Settling those
+means building the workspace, serving it over HTTP and driving a real browser,
+which costs minutes per task and a judge image carrying Playwright — so it is
+opt-in:
+
+```yaml
+datasets:
+  mtacifbench:
+    judge_config_path:
+      default: "benchmarks/mtacifbench/data/judge_if_function.yaml"
+      instruction_following: "benchmarks/mtacifbench/data/judge_if_function.yaml"
+```
+
+`judge.yaml` leaves it off; `judge_if_function.yaml` turns it on and points the
+functional pass at its own model plus `config/mcp/playwright.json`. The flow is
+detect project → `npm run build` → serve (the framework's own server for SSR,
+`templates/http_server.js` for static output) → judge each item against the live
+page. A project with no HTTP entry point degrades to file mode rather than
+failing.
+
+Two things stay true whether it is on or off:
+
+- **An unrun check scores `None`, never 0.** Switch off, no checklist in the
+  data, build failed, browser died — all of these leave the item out of the
+  denominator. Only checks that produced a verdict are counted, so turning the
+  switch off cannot look like the product regressed.
+- **Instruction-following numbers do not move.** The functional pass reads the
+  same workspace snapshot and writes its own fields; it never feeds back into
+  IFCSR/IFISR/IFSSR.
+
 ## Metrics
 
 | Metric | Definition |
@@ -29,6 +62,15 @@ returns a non-bool **falls back to the judge**. It never scores the constraint 0
 | `IFSSR` | Tasks where every round passed / valid tasks |
 | `IFISR` | Rounds passed / total rounds |
 | `IFCSR` | Constraints satisfied / total constraints |
+
+Reported only when functional evaluation ran, over the tasks it actually
+evaluated:
+
+| Metric | Definition |
+|---|---|
+| `ISR` | Tasks where every functional check passed / functionally evaluated tasks |
+| `CSR` | Functional checks passed / checks that produced a verdict |
+| `BSR` | Successful builds / functionally evaluated tasks |
 
 Only judgements without an error enter the denominator: infrastructure failures
 show up as missing coverage (`success_count` < `total`), never as constraint
@@ -57,14 +99,18 @@ measures and how the data is built.
 Constraints span rounds — "every reply must start with 喵～", "keep the naming
 you used last round", and a later round may *forbid* what an earlier round
 required. The whole task therefore runs in **one** agent conversation: the task
-sets `SandboxSpec.keep_session=True`, so `ClaudeCodeAgent` resumes the same
-session (`--resume <sid>`) from round 2 on instead of starting a fresh one. Scoring a round
-against constraints the agent could no longer see would measure the harness, not
-the agent.
+sets `SandboxSpec.keep_session=True`, so the agent continues the same session
+from round 2 on instead of starting a fresh one (`claude --resume <sid>`,
+`opencode run --continue`). Scoring a round against constraints the agent could
+no longer see would measure the harness, not the agent.
 
-The dataset's `system_prompt` is injected through
-`SandboxSpec.append_system_prompt` → `claude --append-system-prompt`, so
-benchmark-only instructions never touch contestant-owned files in the workspace.
+The dataset's `system_prompt` reaches the agent **out of band** — never as a
+file in the workspace. Claude Code takes it as `--append-system-prompt`;
+OpenCode takes it as a named agent in `opencode.json` with a `prompt` field,
+selected with `--agent`. That is what keeps the workspace a clean record of what
+the model built, and what makes the two agents' scores comparable: neither one
+can read, edit or be confused by the benchmark's own instructions sitting in a
+file it owns.
 
 ## Rounds are independent
 
@@ -119,7 +165,7 @@ That drops `questions.jsonl` into `benchmarks/mtacifbench/data/` next to the
 `--force` to re-download.
 
 The dataset card documents every field, the metric definitions and the
-constraint categories. Two things worth knowing before reading the data:
+constraint categories. Three things worth knowing before reading the data:
 
 - Each round's `instruction_following_checklist` is **self-contained**.
   Constraints may be replaced or even reversed between rounds (`verified_1`
@@ -129,6 +175,9 @@ constraint categories. Two things worth knowing before reading the data:
   instead of the LLM judge. `validation.py` executes each one in a subprocess
   with a timeout, and a checker that times out, raises or returns a non-bool
   degrades to the judge rather than scoring the constraint 0.
+- `function_checklist` holds the per-task functional requirements. It is present
+  in the data whether or not the functional pass is switched on — whether a task
+  *has* functional requirements belongs to the dataset, not to a run's config.
 
 ### Container images
 

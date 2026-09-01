@@ -60,6 +60,12 @@ benchmarks/zbackendbench/data/tasks/*
 # Reference fixes stay out: the two tasks are meant to be run, not read.
 benchmarks/zbackendbench/data/tasks/*/solution/
 
+# Judge configs are configuration, not data: they name a model and an agent,
+# carry no questions, and a clone needs them to run anything at all.
+!benchmarks/mtacifbench/data/
+benchmarks/mtacifbench/data/*
+!benchmarks/mtacifbench/data/judge*.yaml
+
 .vscode/
 .sandbox.toml
 .claude
