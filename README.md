@@ -26,6 +26,7 @@ src/agent_probe/
     factory.py           # ExperimentFactory (composition root)
   agents/
     claude_code.py       # ClaudeCodeAgent implementation
+    opencode.py          # OpenCodeAgent (Node CLI; needs a Node runtime offline)
   executors/
     pipeline_executor.py # Concurrent inference -> judge pipeline
   repos/
@@ -100,7 +101,9 @@ registry checksum and reused, and an already-running server is left alone.
   benchmark that starts a container per round hits `ECONNRESET` otherwise, and
   judge images have no npm to fall back on. Downloaded with `curl` and checked
   against the registry's own sha512, so the host needs no Node at all. Pass
-  `--musl` if your sandbox images are Alpine-based.
+  `--musl` if your sandbox images are Alpine-based, and `--opencode` to also
+  fetch the OpenCode CLI plus the Node runtime it needs (unlike Claude Code it
+  is not a self-contained binary).
 - **Starts the OpenSandbox server.** Generates `.sandbox.toml` from the packaged
   docker example if absent, launches the server in the background
   (`.sandbox.log`, `.sandbox.pid`) and waits for the port. Without an API key the
