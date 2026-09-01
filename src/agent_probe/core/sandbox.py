@@ -57,6 +57,10 @@ class SandboxSpec(BaseModel):
     env_vars: dict[str, str] = Field(default_factory=dict)
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
     timeout_sec: int = 10800
+    # Per-prompt cap handed to the agent CLI. ``timeout_sec`` bounds the whole
+    # sandbox; a multi-round task needs each round bounded separately, or one
+    # stuck round eats the budget of every round after it.
+    agent_timeout_sec: Optional[int] = None
     workspace: Optional[str] = None
     volumes: list[Volume] = Field(default_factory=list)
 
@@ -70,6 +74,10 @@ class SandboxSpec(BaseModel):
     # --append-system-prompt). Used for per-question system constraints and for
     # judge anti-injection instructions.
     append_system_prompt: str = ""
+    # Fail the round when the agent stopped mid-turn (output cap, or ended
+    # holding an unanswered tool call). Off by default: benchmarks that score a
+    # partial workspace on purpose must be able to keep doing so.
+    require_complete_response: bool = False
 
     agent_config: Optional[AgentConfig] = None
     model_cfg: Optional[ModelConfig] = None
@@ -220,6 +228,9 @@ class Sandbox:
                 result.rounds.append(exec_result)
 
                 if output_dir:
+                    # Clear first: a failed export or parse must not leave the
+                    # previous round's reply standing in for this one.
+                    result.last_assistant = None
                     try:
                         await agent.collect_traces(self, output_dir)
                         result.last_assistant = await agent.collect_last_assistant(
@@ -227,6 +238,11 @@ class Sandbox:
                         )
                     except Exception as e:
                         logger.warning("per-round trace collection failed: {}", e)
+
+                round_error = self._round_error(exec_result, result.last_assistant)
+                if round_error is not None:
+                    result.error = round_error
+                    break
 
                 # Check for next round
                 if self.spec.on_nextround:
@@ -239,28 +255,52 @@ class Sandbox:
                 else:
                     break
 
-        # 5. Parse error — exec exit_code first, then trace stop_reason
-        if result.last and result.last.exit_code != 0:
-            last_assistant_error = (
-                result.last_assistant.error_message if result.last_assistant else None
-            )
-            result.error = Error(
-                code=ErrorCode.AGENT_EXIT_NONZERO,
-                message=last_assistant_error
-                or (result.last.stderr or "")[-500:]
-                or "Non-zero exit code",
-            )
-        elif result.last_assistant and result.last_assistant.stop_reason == "error":
-            result.error = Error(
-                code=ErrorCode.AGENT_STOP_ERROR,
-                message=result.last_assistant.error_message or "agent stopped with error",
-            )
+        # 5. Parse error — a per-round check may already have set one.
+        if result.error is None:
+            result.error = self._round_error(result.last, result.last_assistant)
 
         # 6. Complete (side-effect only, e.g. cleanup)
         if self.spec.on_complete:
             await self.spec.on_complete(self, result)
 
         return result
+
+    def _round_error(
+        self,
+        exec_result: ExecResult | None,
+        last_assistant: LastAssistant | None,
+    ) -> Error | None:
+        """Classify one round's outcome, or ``None`` when it is healthy.
+
+        Order matters. A non-zero exit is *not* conclusive on its own: agent
+        CLIs regularly exit non-zero on teardown after they have already
+        delivered a complete final answer, and discarding that round would
+        throw away real work. So a complete response wins over the exit code,
+        and only then do the trace-level signals get a say.
+        """
+        complete = bool(last_assistant and last_assistant.is_complete_response)
+
+        if exec_result is not None and exec_result.exit_code != 0 and not complete:
+            return Error(
+                code=ErrorCode.AGENT_EXIT_NONZERO,
+                message=(last_assistant.error_message if last_assistant else None)
+                or (exec_result.stderr or exec_result.stdout or "")[-500:]
+                or "Non-zero exit code",
+            )
+        if last_assistant and last_assistant.stop_reason == "error":
+            return Error(
+                code=ErrorCode.AGENT_STOP_ERROR,
+                message=last_assistant.error_message or "agent stopped with error",
+            )
+        if self.spec.require_complete_response and not complete:
+            stop_reason = last_assistant.stop_reason if last_assistant else None
+            suffix = f" (stop_reason={stop_reason})" if stop_reason else ""
+            return Error(
+                code=ErrorCode.AGENT_INCOMPLETE_RESPONSE,
+                message=(last_assistant.error_message if last_assistant else None)
+                or f"agent stopped without a complete final response{suffix}",
+            )
+        return None
 
     # ------------------------------------------------------------------
     # Atomic operations — used by Hooks and Agents

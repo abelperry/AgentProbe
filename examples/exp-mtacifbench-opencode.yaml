@@ -1,0 +1,49 @@
+name: "agent-mtacifbench-opencode"
+# Host is 31 GB / 16 cores. Each inference unit holds one container and each
+# judged round can fan out up to eval_concurrent judge containers, so keep the
+# pipeline narrow.
+concurrency: 3
+output_dir: "./output"
+
+sandbox:
+  host: "localhost:8080"
+  request_timeout: 600
+  api_key: "${SANDBOX_KEY}"
+
+models:
+  glm-5.3:
+    base_url: "https://open.bigmodel.cn/api/anthropic/"
+    api_key: "${ZHIPU_API_KEY}"
+    model_name: "glm-5.3"
+    format: "anthropic"
+    timeout: 37800
+    max_tokens: 32000
+    max_thinking_tokens: 16000
+    thinking: "max"
+
+datasets:
+  mtacifbench:
+    name: "mtacifbench"
+    adapter_type: "local_jsonl"
+    data_dir: "benchmarks/mtacifbench/data"
+    task_type: "benchmarks.mtacifbench.task.MTACIFBenchTask"
+    judge_config_path:
+      default: "benchmarks/mtacifbench/data/judge.yaml"
+      instruction_following: "benchmarks/mtacifbench/data/judge.yaml"
+
+agents:
+  # Same benchmark, same judge, different agent CLI -- that is the whole point
+  # of this file. Results are only comparable to the claude_code run because
+  # both receive the task's system_prompt out of band rather than through a
+  # file in the workspace.
+  opencode:
+    type: "agent_probe.agents.opencode.OpenCodeAgent"
+    offline: true
+    offline_package_dir: ${OFFLINE_PACKAGE_DIR}
+    params:
+      # OpenCode is a Node program, so the offline package dir must also carry
+      # a Node runtime: ./scripts/init.sh --opencode
+      opencode_version: "1.1.21"
+      # Turn on only for a gateway that cannot stream; see
+      # src/agent_probe/agents/opencode_gateway_proxy.mjs.
+      gateway_proxy: false

@@ -20,6 +20,14 @@ class BaseAgent(ABC):
     eval unit, and use them to configure environment variables, CLI flags, etc.
     """
 
+    #: Files this CLI reads as standing project instructions, most preferred
+    #: first. Only consulted by benchmarks that have to write instructions into
+    #: the workspace; agents that accept them out of band (Claude Code's
+    #: ``--append-system-prompt``, OpenCode's per-agent ``prompt``) should be
+    #: driven through that channel instead, so the workspace stays a clean
+    #: record of what the model built.
+    project_instruction_filenames: tuple[str, ...] = ("CLAUDE.md",)
+
     def __init__(
         self,
         agent_config: AgentConfig,

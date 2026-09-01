@@ -48,11 +48,19 @@ class AgentConfig(BaseModel):
 
     type: str  # dotted path, e.g. "agent_probe.agents.claude_code.ClaudeCodeAgent"
     envs: dict[str, str] = Field(default_factory=dict)
+    # Agent-specific knobs. Deliberately untyped: what OpenCode needs
+    # (npm_package, agent_name, gateway_proxy) means nothing to Claude Code,
+    # and adding every agent's options to this shared model would make the
+    # config lie about which ones apply.
+    params: dict[str, Any] = Field(default_factory=dict)
     version: str = "2.1.199"  # agent install version
     mcp_host_path: str = ""  # host path to MCP config JSON file
     offline: bool = False  # install agent from local offline packages
     offline_package_dir: str = ""  # host dir mounted read-only when offline=True
     offline_mount_path: str = "/mnt/offline_package"
+    # Node runtime shipped in the offline package dir. Only agents that are
+    # Node programs need it -- the Claude Code CLI is a self-contained binary.
+    offline_node_version: str = "22.21.1"
 
 
 class JudgeConfig(BaseModel):
@@ -62,6 +70,21 @@ class JudgeConfig(BaseModel):
     agent: AgentConfig
     prompt_template: str = ""
     extract_api: ModelConfig | None = None
+
+    # Off by default. Functional evaluation builds the project, serves it over
+    # HTTP and drives a browser, which costs minutes per task and needs a judge
+    # image carrying Playwright -- none of which an instruction-following run
+    # should pay for. See benchmarks/mtacifbench/function_eval.py.
+    function_checklist_eval_enabled: bool = False
+    # Functional checks are read off a rendered page, which is a different job
+    # from reading a transcript, so they may want a different model and a judge
+    # agent wired to an MCP browser. Both fall back to the main judge.
+    function_model: ModelConfig | None = None
+    function_agent: AgentConfig | None = None
+
+    def function_runtime(self) -> tuple[ModelConfig, AgentConfig]:
+        """Return the model and agent that run the functional checklist."""
+        return self.function_model or self.model, self.function_agent or self.agent
 
     @classmethod
     def from_yaml(cls, path: Path) -> JudgeConfig:
