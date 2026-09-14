@@ -203,10 +203,10 @@ _ENV_PATTERN = re.compile(r"\$\{(\w+)\}")
 
 
 def _resolve_auth_file(value: Any, config_path: Path) -> Path:
-    configured = str(value or os.environ.get("GLM_API_AUTH_FILE") or "").strip()
+    configured = str(value or os.environ.get("AGENTPROBE_AUTH_FILE") or "").strip()
     if not configured:
         raise ValueError(
-            "api_name requires auth_file or the GLM_API_AUTH_FILE environment variable"
+            "api_name requires auth_file or the AGENTPROBE_AUTH_FILE environment variable"
         )
     auth_path = Path(configured).expanduser()
     if not auth_path.is_absolute():

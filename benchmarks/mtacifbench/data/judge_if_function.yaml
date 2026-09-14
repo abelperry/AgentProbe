@@ -16,8 +16,8 @@ agent:
 
 function_checklist_eval_enabled: true
 function_model:
-  base_url: "${FUNCTION_JUDGE_BASE_URL}"
-  api_key: "${FUNCTION_JUDGE_API_KEY}"
+  base_url: "${GATEWAY_BASE_URL}"
+  api_key: "${GATEWAY_API_KEY}"
   model_name: "claude-sonnet-4-6-thinking"
   format: "anthropic"
   timeout: 3600
