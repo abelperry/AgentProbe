@@ -34,9 +34,10 @@ one** holds, and — crucially — a later round may **contradict** an earlier o
 
 ## Why constraints are per-round, not cumulative
 
-Each round's checklist is self-contained. It is never merged with, or inherited
-from, another round. That is the central design decision, and it exists because
-the data intentionally reverses instructions mid-conversation. From `verified_1`:
+Each round's local checklist is not inherited from another round; the global
+`repository_policy_checklist` is merged into every round. This distinction
+allows the data to reverse round-local instructions mid-conversation while
+keeping repository policy permanent. From task 1:
 
 | Round | ESLint instruction |
 |---|---|
@@ -64,10 +65,11 @@ In AgentProbe this is `SandboxSpec.keep_session=True`, which stops the engine
 rotating the session id and makes `ClaudeCodeAgent` resume the same session
 (`--resume`) from round 2 on.
 
-The per-task `system_prompt` — constraints that apply to every round — is
-injected out of band (`--append-system-prompt`), never by writing into the
-workspace. The workspace is the artifact under evaluation; putting benchmark
-instructions in it would contaminate the thing being measured.
+The per-task `repository_policy` applies to every round. It is temporarily
+merged into the project instruction file understood by the selected agent, then
+the original file is restored before every scored snapshot and final export.
+This gives Claude Code and OpenCode their native repository-policy semantics
+without contaminating the workspace artifact under evaluation.
 
 ## Data design
 
@@ -76,11 +78,12 @@ One JSON object per task. The full field reference lives in the
 design-relevant parts:
 
 ```
-task_id, docker, judge_docker, workspace_dir, system_prompt, description
+task_id, repository_policy, repository_policy_checklist, task_category
+function_checklist[]
 rounds[]
-  round_id, prompt
+  round_id, instruction
   instruction_following_checklist[]
-    constraint, validation_code, tags, main_id, type_id
+    constraint, validation_code, tags
 ```
 
 **Scale.** 20 tasks, 141 rounds (5–10 per task, median 7), 1,853 constraints
@@ -167,19 +170,18 @@ real model weakness would look like.
 |---|---|
 | **IFCSR** | constraints satisfied / total constraints |
 | **IFISR** | rounds where every constraint held / total rounds |
-| **IFSSR** | tasks where every round passed / total tasks |
 
-Nested and increasingly strict. IFCSR is the smooth signal; IFISR is
-hypersensitive because ~13 constraints must hold simultaneously (at 85%
-per-constraint, independent failures would give ~12% clean rounds); IFSSR
-requires a flawless 5-to-10-round session and is currently 0 for every model
-measured.
+IFCSR is the smooth signal; IFISR is hypersensitive because ~13 constraints
+must hold simultaneously. When functional judging is enabled, `average`, `ISR`,
+`CSR`, and `BSR` report mean checklist score, strict task success, checklist
+item success, and build success respectively.
 
 Only tasks that produced a verdict enter the denominators.
 
 ## Reference results
 
-`glm-5.3` driving Claude Code 2.1.199, judged by `deepseek-v4-pro`. 19 of 20
+Historical pre-WBS reference: `glm-5.3` driving Claude Code 2.1.199, judged by
+`deepseek-v4-pro`. 19 of 20
 tasks valid — one hit an API quota limit mid-inference and is excluded from the
 score rather than counted as a failure.
 
@@ -187,7 +189,6 @@ score rather than counted as a failure.
 |---|---|
 | IFCSR | 86.89 |
 | IFISR | 21.37 |
-| IFSSR | 0.00 |
 
 | Verdict source | Constraints | Pass rate |
 |---|---|---|
@@ -204,10 +205,10 @@ judge*: thinking budget and session handling both move it materially, and half
 the constraints are scored by a judge model that is itself part of the
 measurement. Report the whole configuration alongside any score.
 
-## What is deliberately not measured
+## Optional functional measurement
 
-Whether the software works. There is no build step, no HTTP server, no functional
-checklist — those belong to other benchmarks. A task where the agent produced a
-broken page but obeyed every constraint scores well here, and that is the
-intended behaviour: this benchmark isolates instruction following so it can be
-read independently of coding ability.
+Instruction-following remains independently reported. With
+`function_checklist_eval_enabled`, the WBS extension also builds or serves the
+final project and evaluates each string-valued function checklist item through
+Claude Code plus Playwright MCP. Functional failures do not get folded into
+IFCSR or IFISR; they are reported through the separate functional metrics.

@@ -6,10 +6,9 @@ round's constraint checklist — not against the feature it built.
 
 ## What is scored
 
-The score comes **entirely from instruction following**. There is no build step,
-no HTTP server, no functional checklist. Whether the software works is a
-different question, measured by other benchmarks; this one isolates whether the
-agent obeyed what it was told while building it.
+Instruction-following is always scored. A WBS functional judge can additionally
+build or serve the final project and evaluate the task's string-valued
+`function_checklist`; it is opt-in through `judge_if_function.yaml`.
 
 Each constraint is decided one of two ways:
 
@@ -26,9 +25,10 @@ returns a non-bool **falls back to the judge**. It never scores the constraint 0
 
 | Metric | Definition |
 |---|---|
-| `IFSSR` | Tasks where every round passed / valid tasks |
 | `IFISR` | Rounds passed / total rounds |
 | `IFCSR` | Constraints satisfied / total constraints |
+| `average` | Mean functional-checklist score when functional judging is enabled |
+| `ISR` / `CSR` / `BSR` | Functional strict-task, checklist-item, and build success rates |
 
 Only judgements without an error enter the denominator: infrastructure failures
 show up as missing coverage (`success_count` < `total`), never as constraint
@@ -36,14 +36,14 @@ violations.
 
 ## Baseline
 
-`glm-5.3` driving Claude Code 2.1.199, judged by `deepseek-v4-pro`, 19 of 20
+Historical pre-WBS reference: `glm-5.3` driving Claude Code 2.1.199, judged by
+`deepseek-v4-pro`, 19 of 20
 tasks valid (one hit an API quota limit mid-inference):
 
 | Metric | Score |
 |---|---|
 | IFCSR | 86.89 |
 | IFISR | 21.37 |
-| IFSSR | 0.00 |
 
 By verdict source: deterministic checkers 84.0%, LLM judge 89.4%. CLI budget 32k
 output / 16k thinking tokens, reasoning effort `max`.
@@ -62,16 +62,17 @@ session (`--resume <sid>`) from round 2 on instead of starting a fresh one. Scor
 against constraints the agent could no longer see would measure the harness, not
 the agent.
 
-The dataset's `system_prompt` is injected through
-`SandboxSpec.append_system_prompt` → `claude --append-system-prompt`, so
-benchmark-only instructions never touch contestant-owned files in the workspace.
+The dataset's `repository_policy` is temporarily merged into the project
+instruction file understood by the selected agent (`CLAUDE.md` for Claude Code;
+`AGENTS.md`, `CLAUDE.md`, or `CONTEXT.md` for OpenCode). The original file is
+restored before snapshots and final workspace export, so the injected policy is
+not scored as contestant output.
 
 ## Rounds are independent
 
-Each round's `instruction_following_checklist` is self-contained and is never
-merged with or inherited from another round. The dataset really does replace
-constraints between rounds (`verified_1`: round 0 requires ESLint to pass,
-round 1 forbids running ESLint at all, round 2 requires it again).
+Round-local constraints are not inherited from other rounds. Global
+`repository_policy_checklist` constraints are merged into every round at read
+time; a round-local copy wins so its round-specific validation code is retained.
 
 ## Artifacts
 
@@ -89,6 +90,8 @@ output/{exp}/mtacifbench/{agent}/{model}/
       judge_prompt.txt
       round_results.json
       attempt_{n}/traces/               # judge agent traces
+  eval/{qid}/function_checklist/         # optional build and per-item browser checks
+  eval/{qid}/eval_result.json
   result/{qid}.json
 ```
 
@@ -121,10 +124,8 @@ That drops `questions.jsonl` into `benchmarks/mtacifbench/data/` next to the
 The dataset card documents every field, the metric definitions and the
 constraint categories. Two things worth knowing before reading the data:
 
-- Each round's `instruction_following_checklist` is **self-contained**.
-  Constraints may be replaced or even reversed between rounds (`verified_1`
-  requires ESLint in round 0, forbids it in round 1, requires it again in round
-  2), so a round is only ever scored against its own checklist.
+- `repository_policy_checklist` applies to every round. Round-local constraints
+  may still be replaced or reversed between rounds.
 - Roughly half the constraints carry a `validation_code` — a Python checker run
   instead of the LLM judge. `validation.py` executes each one in a subprocess
   with a timeout, and a checker that times out, raises or returns a non-bool
@@ -132,9 +133,9 @@ constraint categories. Two things worth knowing before reading the data:
 
 ### Container images
 
-`docker` (the agent's sandbox) and `judge_docker` (the judge's sandbox) come from
-the question data. Both images the dataset ships are public on Docker Hub and
-pull anonymously, so a clone plus a dataset pull is enough to run:
+`docker` and `judge_docker` remain optional deployment fields. The WBS JSONL
+omits them: inference falls back to the public web-development image below, and
+the judge must be supplied through `MTACIF_JUDGE_IMAGE`.
 
 | Field | Image | Compressed | Role |
 |---|---|---|---|
@@ -146,10 +147,8 @@ docker pull alexgshaw/break-filter-js-from-html:20251031
 docker pull dayong657/playwright-mcp-base:0.1.0
 ```
 
-Both are `linux/amd64` only. To substitute your own, either edit the data or set
-`MTACIF_JUDGE_IMAGE`, which supplies the judge image for data that omits the
-field — there is deliberately no built-in default, so a missing image fails at
-load time rather than halfway through a run.
+Both are `linux/amd64` only. Set `MTACIF_JUDGE_IMAGE` before loading the dataset;
+there is deliberately no built-in judge default.
 
 ### Rebuilding from a private export
 
@@ -175,6 +174,7 @@ task ids, and empty instructions are all errors, not warnings. Useful flags:
 source .agentprobe-env                  # exports OFFLINE_PACKAGE_DIR
 
 export ZHIPU_API_KEY=... GATEWAY_API_KEY=...
+export MTACIF_JUDGE_IMAGE=dayong657/playwright-mcp-base:0.1.0
 uv run agentprobe -c examples/exp-mtacifbench.yaml -l debug
 ```
 
@@ -182,6 +182,6 @@ uv run agentprobe -c examples/exp-mtacifbench.yaml -l debug
 this benchmark starts one judge container per round, and an online `npm i -g` at
 that rate hits `ECONNRESET` (the judge image has no npm to fall back on either).
 The tarball version has to match `agent.version` in `judge.yaml`, which pins
-`2.1.199` — the same version `init.sh` fetches. See
+`2.1.14`. See
 [the root README](../../README.md#2-initialise) for what the sandbox does with
 these at install time.
