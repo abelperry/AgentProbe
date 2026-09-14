@@ -125,8 +125,6 @@ def convert_record(
         task_id = int(raw_task_id)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid task_id: {raw_task_id!r}") from exc
-    if not 1 <= task_id <= 100:
-        raise ValueError(f"task_id must be from 1 to 100: {task_id}")
 
     repository_policy = str(
         record.get("repository_policy") or record.get("system_prompt") or ""

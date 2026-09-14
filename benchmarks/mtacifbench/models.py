@@ -71,7 +71,7 @@ class MTACIFRound(BaseModel):
 
 
 class MTACIFBenchQuestion(BaseQuestion):
-    """One MTAC-IFBench task in the WBS dataset shape."""
+    """One MTAC-IFBench task in the released dataset shape."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -93,11 +93,14 @@ class MTACIFBenchQuestion(BaseQuestion):
     validation_code_timeout: int = 60
     judge_parse_retry_max: int = 3
 
-    @field_validator("task_id")
+    @field_validator("task_id", mode="before")
     @classmethod
-    def _validate_task_id(cls, value: int) -> int:
-        if isinstance(value, bool) or not 1 <= value <= 100:
-            raise ValueError("MTAC-IFBench task_id must be an integer from 1 to 100")
+    def _validate_task_id(cls, value: object) -> object:
+        # Only reject a bool: pydantic would otherwise coerce True to task_id 1
+        # and silently collide with a real question. The value is not bounded —
+        # the dataset's size is not the loader's business.
+        if isinstance(value, bool):
+            raise ValueError("MTAC-IFBench task_id must be an integer, not a bool")
         return value
 
     @field_validator("repository_policy")
