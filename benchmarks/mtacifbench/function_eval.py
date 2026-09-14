@@ -28,6 +28,7 @@ from benchmarks.mtacifbench.models import (
     FunctionCheckResult,
     MTACIFBenchInference,
     MTACIFBenchQuestion,
+    resolve_judge_image,
 )
 from benchmarks.mtacifbench.validation import collect_judge_candidates
 
@@ -124,14 +125,10 @@ async def evaluate_function_checklist(
         return _incomplete_outcome(checklist, runtime_error)
 
     # Both the build sandbox and the per-item judge sandbox run on this image.
-    # No released question carries judge_docker, so it normally comes from
-    # MTACIF_JUDGE_IMAGE; an empty value would reach the sandbox API and fail
-    # there with an error that says nothing about the missing config.
-    if not str(question.judge_docker or "").strip():
-        return _incomplete_outcome(
-            checklist,
-            "no judge image: set MTACIF_JUDGE_IMAGE or give the question a judge_docker value",
-        )
+    try:
+        judge_image = resolve_judge_image(question, judge_config)
+    except ValueError as exc:
+        return _incomplete_outcome(checklist, str(exc))
 
     workspace_archive = inference_result.workspace_tar_path
     if workspace_archive is None or not workspace_archive.is_file():
@@ -163,6 +160,7 @@ async def evaluate_function_checklist(
             function_dir=function_dir,
             workspace_dir=actual_workspace,
             project_info=project_info,
+            judge_image=judge_image,
         )
         if not build_result.success:
             reason = f"Build failed: {build_result.error_message or 'unknown error'}"
@@ -195,6 +193,7 @@ async def evaluate_function_checklist(
                 function_model=function_model,
                 function_agent=function_agent,
                 semaphore=semaphore,
+                judge_image=judge_image,
             )
             for index, item in enumerate(checklist)
         )
@@ -357,6 +356,7 @@ async def _build_workspace(
     function_dir: Path,
     workspace_dir: Path,
     project_info: ProjectInfo,
+    judge_image: str,
 ) -> FunctionBuildResult:
     build_dir = function_dir / "build_workspace"
 
@@ -466,7 +466,7 @@ async def _build_workspace(
         )
 
     spec = SandboxSpec(
-        image=question.judge_docker,
+        image=judge_image,
         sandbox_config=ctx.sandbox_config,
         timeout_sec=max(120, question.http_build_timeout + 120),
         on_setup=setup,
@@ -508,6 +508,7 @@ async def _evaluate_one(
     function_model: ModelConfig,
     function_agent: AgentConfig,
     semaphore: asyncio.Semaphore,
+    judge_image: str,
 ) -> FunctionCheckResult:
     artifact_dir = function_dir / "checks" / f"check_{item_index}"
     result_path = artifact_dir / "result.json"
@@ -543,7 +544,7 @@ async def _evaluate_one(
         async with semaphore:
             try_dir = artifact_dir / "run"
             spec = SandboxSpec(
-                image=question.judge_docker,
+                image=judge_image,
                 sandbox_config=ctx.sandbox_config,
                 prompt=prompt,
                 agent_config=function_agent,

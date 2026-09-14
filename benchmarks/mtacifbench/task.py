@@ -38,6 +38,7 @@ from benchmarks.mtacifbench.models import (
     MTACIFBenchQuestion,
     MTACIFRound,
     RoundRecord,
+    resolve_judge_image,
 )
 from benchmarks.mtacifbench.prompts import (
     INSTRUCTION_FOLLOWING_EVALUATION_PROMPT_TEMPLATE,
@@ -977,15 +978,7 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         output_dir: Path,
     ) -> SandboxResult:
         judge_cfg = self._get_judge_config(ctx)
-        # No question in the released dataset carries judge_docker, so without
-        # MTACIF_JUDGE_IMAGE this would hand the empty string to the sandbox API
-        # and fail remotely with an opaque error. Say what is actually missing.
-        judge_image = str(question.judge_docker or "").strip()
-        if not judge_image:
-            raise ValueError(
-                "no judge image: set MTACIF_JUDGE_IMAGE or give the question a "
-                "judge_docker value"
-            )
+        judge_image = resolve_judge_image(question, judge_cfg)
 
         async def _setup(sb: Sandbox) -> None:
             await sb.exec_cmd(f"mkdir -p {CONTAINER_WORKSPACE}")

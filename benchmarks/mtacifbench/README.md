@@ -135,7 +135,8 @@ constraint categories. Two things worth knowing before reading the data:
 
 `docker` and `judge_docker` remain optional deployment fields. The released
 questions omit both: inference falls back to the public web-development image
-below, and the judge must be supplied through `MTACIF_JUDGE_IMAGE`.
+below, and the judge image is configured as `docker` in `judge.yaml`. Set
+`MTACIF_JUDGE_IMAGE` to override it for a single run.
 
 | Field | Image | Compressed | Role |
 |---|---|---|---|
@@ -147,8 +148,7 @@ docker pull alexgshaw/break-filter-js-from-html:20251031
 docker pull dayong657/playwright-mcp-base:0.1.0
 ```
 
-Both are `linux/amd64` only. Set `MTACIF_JUDGE_IMAGE` before loading the dataset;
-there is deliberately no built-in judge default.
+Both are `linux/amd64` only.
 
 ### Rebuilding from a private export
 
@@ -174,7 +174,6 @@ task ids, and empty instructions are all errors, not warnings. Useful flags:
 source .agentprobe-env                  # exports OFFLINE_PACKAGE_DIR
 
 export ZHIPU_API_KEY=... GATEWAY_API_KEY=...
-export MTACIF_JUDGE_IMAGE=dayong657/playwright-mcp-base:0.1.0
 uv run agentprobe -c examples/exp-mtacifbench.yaml -l debug
 ```
 

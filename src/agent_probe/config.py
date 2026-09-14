@@ -148,6 +148,7 @@ class JudgeConfig(BaseModel):
 
     model: ModelConfig
     agent: AgentConfig
+    docker: str = ""
     prompt_template: str = ""
     extract_api: ModelConfig | None = None
     function_checklist_eval_enabled: bool = False

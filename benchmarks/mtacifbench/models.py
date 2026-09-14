@@ -15,19 +15,10 @@ from pydantic import (
     model_validator,
 )
 
+from agent_probe.config import JudgeConfig
 from agent_probe.core.models import BaseInference, BaseJudgement, BaseQuestion, Error
 
 DEFAULT_INFER_DOCKER = "alexgshaw/break-filter-js-from-html:20251031"
-
-
-def _default_judge_docker() -> str:
-    """Judge image, read per question rather than snapshotted at import.
-
-    Judge containers are deployment-specific and no released question carries
-    judge_docker, so this is normally supplied by MTACIF_JUDGE_IMAGE. Reading it
-    lazily means setting the variable after this module is imported still works.
-    """
-    return os.environ.get("MTACIF_JUDGE_IMAGE", "")
 
 
 PASS_CONCLUSION = "[[满足了该要求]]"
@@ -83,7 +74,7 @@ class MTACIFBenchQuestion(BaseQuestion):
     function_checklist: list[str] = Field(default_factory=list)
 
     docker: str = DEFAULT_INFER_DOCKER
-    judge_docker: str = Field(default_factory=_default_judge_docker)
+    judge_docker: str = ""
     workspace_dir: str = "/workspace"
     test_mode: Literal["http", "file"] = "http"
     http_port: int = 5173
@@ -96,9 +87,7 @@ class MTACIFBenchQuestion(BaseQuestion):
     @field_validator("task_id", mode="before")
     @classmethod
     def _validate_task_id(cls, value: object) -> object:
-        # Only reject a bool: pydantic would otherwise coerce True to task_id 1
-        # and silently collide with a real question. The value is not bounded —
-        # the dataset's size is not the loader's business.
+        # Rejected explicitly: pydantic would coerce True to task_id 1.
         if isinstance(value, bool):
             raise ValueError("MTAC-IFBench task_id must be an integer, not a bool")
         return value
@@ -267,3 +256,25 @@ class MTACIFBenchJudgement(BaseJudgement):
         if abs(self.function_score - expected_score) > 1e-9:
             self.error = Error(code=-1, message="function checklist score is inconsistent")
         return self
+
+
+def resolve_judge_image(question: MTACIFBenchQuestion, judge_config: JudgeConfig) -> str:
+    """Pick the image the judge sandbox runs in.
+
+    MTACIF_JUDGE_IMAGE overrides everything for a one-off run, then the
+    question's own ``judge_docker``, then ``docker`` in the judge config, which
+    is where it normally comes from. Raising beats letting an empty string reach
+    the sandbox API, which fails there without naming the cause.
+    """
+    for candidate in (
+        os.environ.get("MTACIF_JUDGE_IMAGE"),
+        question.judge_docker,
+        judge_config.docker,
+    ):
+        image = str(candidate or "").strip()
+        if image:
+            return image
+    raise ValueError(
+        "no judge image: set `docker` in the judge config, or MTACIF_JUDGE_IMAGE, "
+        "or give the question a judge_docker value"
+    )

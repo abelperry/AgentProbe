@@ -1,3 +1,7 @@
+# Also builds and serves the project for function-checklist evaluation, so this
+# image must carry Playwright. linux/amd64 only.
+docker: "dayong657/playwright-mcp-base:0.1.0"
+
 model:
   # No trailing slash: the Claude Code CLI appends /v1/messages to this value
   # itself, and a trailing slash doubles the separator. Same reason as judge.yaml.
