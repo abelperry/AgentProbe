@@ -154,7 +154,7 @@ def test_round_checklist_is_the_dataset_round_checklist_verbatim() -> None:
     assert question.constraint_count == 2
 
 
-def test_wbs_question_dump_contains_only_the_new_schema() -> None:
+def test_question_dump_contains_only_the_new_schema() -> None:
     payload = MTACIFBenchQuestion.model_validate(_record()).model_dump(mode="json")
     assert payload["task_id"] == 1
     assert "repository_policy" in payload
@@ -514,7 +514,7 @@ def test_parse_check_results_absorbs_judge_format_drift(output_builder: Any) -> 
 
 
 def test_parse_check_results_keeps_the_judge_requirement_text() -> None:
-    """WBS behaviour: the judge's own requirement text is recorded as-is.
+    """The judge's own requirement text is recorded as-is.
 
     The checklist text is only used to fill an omitted 要求 field, so a
     mismatch is visible in the artifact rather than discarding the verdict.
@@ -1390,7 +1390,7 @@ async def test_run_validation_codes_degrades_when_verdict_is_not_an_object(
 
 
 def test_judge_prompt_carries_context_response_and_checklist() -> None:
-    """The judge prompt is the WBS template, filled in the WBS order."""
+    """The judge prompt carries the context, response and checklist in order."""
     question = MTACIFBenchQuestion.model_validate(_record())
     response = "喵～ 见 ```js\nconst a = 1\n``` 汪～"
     prompt = MTACIFBenchTask()._build_judge_prompt(

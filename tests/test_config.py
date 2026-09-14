@@ -193,7 +193,7 @@ def test_api_name_resolves_model_from_auth_file(tmp_path: Path) -> None:
     cfg_file.write_text(
         yaml.safe_dump(
             {
-                "name": "wbs",
+                "name": "exp",
                 "models": {
                     "m": {
                         "api_name": "gateway:model-x",

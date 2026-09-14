@@ -41,7 +41,7 @@ class ModelConfig(BaseModel):
 
     @classmethod
     def from_mapping(cls, value: Any, *, config_path: Path) -> ModelConfig:
-        """Resolve WBS-style ``api_name``/``auth_file`` model entries."""
+        """Resolve ``api_name``/``auth_file`` model entries."""
         if not isinstance(value, dict):
             return cls.model_validate(value)
         data = dict(value)

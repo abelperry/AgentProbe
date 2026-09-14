@@ -265,7 +265,7 @@ Variables the shipped configs expect:
 |---|---|
 | `GATEWAY_BASE_URL` | Base URL of your model gateway (`examples/*.yaml`, judge configs) |
 | `FUNCTION_JUDGE_BASE_URL`, `FUNCTION_JUDGE_API_KEY` | Optional MTAC functional judge |
-| `GLM_API_AUTH_FILE` | WBS-style `api_name` credential mapping when `auth_file` is omitted |
+| `GLM_API_AUTH_FILE` | Credential file for `api_name` model entries when `auth_file` is omitted |
 | `OFFLINE_PACKAGE_DIR` | Host dir holding the `npm pack` tarballs from step 3 |
 | `HTTP_PROXY_URL`, `NO_PROXY_HOSTS` | Egress proxy for sandboxes that need one |
 | `MTACIF_JUDGE_IMAGE`, `MRCC_JUDGE_IMAGE`, `ZFRONT_JUDGE_IMAGE`, `DEFAULT_PLAYWRIGHT_IMAGE`, `DEFAULT_INFER_IMAGE`, `DEFAULT_EVAL_IMAGE` | Fallback images when the data omits them |
