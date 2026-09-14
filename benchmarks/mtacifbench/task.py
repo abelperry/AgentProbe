@@ -626,7 +626,39 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                     eval_dir=eval_dir,
                 )
 
-        round_results = list(await asyncio.gather(*[_one(item) for item in question.rounds]))
+        # One round raising must not discard the verdicts its siblings already
+        # earned. Turn a raise into a parse_failed round: _validate_round_judgements
+        # then fails the question with a code -1 error, so it reruns rather than
+        # being scored on a partial judgement.
+        settled = await asyncio.gather(
+            *[_one(item) for item in question.rounds],
+            return_exceptions=True,
+        )
+        round_results: list[IFRoundResult] = []
+        for round_spec, outcome in zip(question.rounds, settled, strict=True):
+            # return_exceptions=True also captures CancelledError. Swallowing
+            # that would defeat an outer timeout or shutdown, so re-raise it.
+            if isinstance(outcome, asyncio.CancelledError):
+                raise outcome
+            if isinstance(outcome, BaseException):
+                logger.warning(
+                    "[{}] round {} judging raised {}: {}",
+                    ctx.log_tag(),
+                    round_spec.round_id,
+                    type(outcome).__name__,
+                    outcome,
+                )
+                round_results.append(
+                    IFRoundResult(
+                        round_id=round_spec.round_id,
+                        passed=False,
+                        parse_failed=True,
+                        summary="instruction_following judging raised",
+                        symptoms=f"{type(outcome).__name__}: {outcome}"[:1200],
+                    )
+                )
+                continue
+            round_results.append(outcome)
         if judge_config.function_checklist_eval_enabled:
             function_evaluation = await evaluate_function_checklist(
                 question=question,
@@ -780,6 +812,14 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         attempts = max(1, question.judge_parse_retry_max + 1)
         for attempt in range(attempts):
             attempt_dir = round_eval_dir / f"attempt_{attempt}"
+            # Clear the attempt dir before reusing it. Within one judge() call
+            # each attempt gets a fresh path, but a *re-judge* of a round that
+            # previously failed to parse lands on the same attempt_N, and
+            # collect_judge_candidates scans attempt_dir/"traces" — so a stale
+            # trace from the earlier run could be picked up and recorded as this
+            # run's raw_output.
+            if attempt_dir.exists():
+                shutil.rmtree(attempt_dir)
             result = await self._run_judge_sandbox(
                 question=question,
                 ctx=ctx,
@@ -886,14 +926,33 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             if not code:
                 fallback_indices.append(index)
                 continue
-            passed = await asyncio.to_thread(
-                run_validation_code,
-                code,
-                response,
-                snapshot_dir,
-                question.validation_code_timeout,
-                f"[{log_tag} round {round_id} #{index + 1}]",
-            )
+            # run_validation_code converts a timeout, a crash inside the dataset
+            # code and a non-bool return into None by itself. This guard is for
+            # what it cannot: a malformed verdict line that is valid JSON but not
+            # an object (``verdict.get`` raises), or an OSError from the scratch
+            # dir. Without it the exception escapes the asyncio.gather below and
+            # takes down the whole question's judgement; degrade to the judge
+            # instead, exactly as every other unknown-verdict path does.
+            try:
+                passed = await asyncio.to_thread(
+                    run_validation_code,
+                    code,
+                    response,
+                    snapshot_dir,
+                    question.validation_code_timeout,
+                    f"[{log_tag} round {round_id} #{index + 1}]",
+                )
+            except Exception as exc:  # noqa: BLE001 - degrade to the judge
+                logger.warning(
+                    "[{} round {} #{}] validation code raised {}: {}; " "falling back to judge",
+                    log_tag,
+                    round_id,
+                    index + 1,
+                    type(exc).__name__,
+                    exc,
+                )
+                fallback_indices.append(index)
+                continue
             if passed is None:
                 fallback_indices.append(index)
                 continue
