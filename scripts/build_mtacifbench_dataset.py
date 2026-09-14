@@ -6,15 +6,14 @@ the strict shape ``MTACIFBenchQuestion`` loads, so this script is only needed
 when you maintain your own copy of the source questions. Every tolerance for
 loose input lives here, which is what lets the runtime models stay strict:
 
-* ``rounds[*].instruction`` becomes ``rounds[*].prompt``.
+* Round prompts are normalized to ``rounds[*].instruction``.
 * A constraint's ``validation_code`` is kept **on the constraint**. Sources that
   also carry a parallel ``instruction_following_validation_codes[i][j]`` array
   aligned by index get checked for agreement, then the array is dropped —
   removing the whole class of index-misalignment bugs.
-* ``system_prompt_checklist`` is dropped: it is a prefix of each round's own
-  checklist, and nothing scores it separately.
-* Container images missing from the source are materialised into the output, so
-  the dataset is self-describing.
+* ``system_prompt``/``system_prompt_checklist`` become
+  ``repository_policy``/``repository_policy_checklist``.
+* Function-checklist objects become a plain string list.
 """
 
 from __future__ import annotations
@@ -26,8 +25,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-DEFAULT_INFER_DOCKER = "alexgshaw/break-filter-js-from-html:20251031"
-# Deployment-specific: pass --judge-docker or set MTACIF_JUDGE_IMAGE.
+DEFAULT_INFER_DOCKER = ""
 DEFAULT_JUDGE_DOCKER = os.environ.get("MTACIF_JUDGE_IMAGE", "")
 
 
@@ -49,12 +47,10 @@ def convert_constraint(item: Any, where: str) -> dict[str, Any]:
         "constraint": constraint,
         "validation_code": str(item.get("validation_code") or ""),
         "tags": as_list_of_str(item.get("tag") or item.get("tags")),
-        "main_id": item.get("main_id"),
-        "type_id": item.get("type_id"),
     }
 
 
-def convert_rounds(record: dict[str, Any], task_id: str) -> list[dict[str, Any]]:
+def convert_rounds(record: dict[str, Any], task_id: int) -> list[dict[str, Any]]:
     raw_rounds = record.get("rounds")
     if not isinstance(raw_rounds, list) or not raw_rounds:
         raise ValueError(f"{task_id}: rounds is missing or empty")
@@ -108,7 +104,7 @@ def convert_rounds(record: dict[str, Any], task_id: str) -> list[dict[str, Any]]
         rounds.append(
             {
                 "round_id": round_id,
-                "prompt": prompt,
+                "instruction": prompt,
                 "instruction_following_checklist": checklist,
             }
         )
@@ -120,19 +116,60 @@ def convert_record(
     infer_docker: str,
     judge_docker: str,
 ) -> dict[str, Any]:
-    task_id = str(record.get("task_id") or record.get("qid") or "").strip()
-    if not task_id or task_id in {".", ".."} or "/" in task_id or "\\" in task_id:
+    raw_task_id = record.get("task_id")
+    if raw_task_id is None:
+        raw_task_id = record.get("qid")
+    if raw_task_id is None or isinstance(raw_task_id, bool):
         raise ValueError(f"invalid task_id: {record.get('task_id')!r}")
+    try:
+        task_id = int(raw_task_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid task_id: {raw_task_id!r}") from exc
+    if not 1 <= task_id <= 100:
+        raise ValueError(f"task_id must be from 1 to 100: {task_id}")
 
-    return {
+    repository_policy = str(
+        record.get("repository_policy") or record.get("system_prompt") or ""
+    ).strip()
+    if not repository_policy:
+        raise ValueError(f"{task_id}: repository_policy is empty")
+    raw_policy_checklist = (
+        record.get("repository_policy_checklist") or record.get("system_prompt_checklist") or []
+    )
+    if not isinstance(raw_policy_checklist, list):
+        raise ValueError(f"{task_id}: repository_policy_checklist is not a list")
+
+    raw_function_checklist = record.get("function_checklist") or []
+    if not isinstance(raw_function_checklist, list):
+        raise ValueError(f"{task_id}: function_checklist is not a list")
+    function_checklist: list[str] = []
+    for index, item in enumerate(raw_function_checklist):
+        if isinstance(item, dict):
+            text = str(item.get("description") or item.get("constraint") or "").strip()
+        else:
+            text = str(item or "").strip()
+        if not text:
+            raise ValueError(f"{task_id}: function_checklist item {index} is empty")
+        function_checklist.append(text)
+
+    converted = {
         "task_id": task_id,
-        "docker": str(record.get("docker") or infer_docker),
-        "judge_docker": str(record.get("judge_docker") or judge_docker),
-        "workspace_dir": str(record.get("workspace_dir") or "/workspace"),
-        "description": str(record.get("description") or ""),
-        "system_prompt": str(record.get("system_prompt") or "").strip(),
+        "repository_policy": repository_policy,
+        "repository_policy_checklist": [
+            convert_constraint(item, f"{task_id} repository policy #{index + 1}")
+            for index, item in enumerate(raw_policy_checklist)
+        ],
+        "task_category": str(record.get("task_category") or ""),
         "rounds": convert_rounds(record, task_id),
+        "function_checklist": function_checklist,
     }
+    resolved_infer_docker = str(record.get("docker") or infer_docker)
+    resolved_judge_docker = str(record.get("judge_docker") or judge_docker)
+    if resolved_infer_docker:
+        converted["docker"] = resolved_infer_docker
+    if resolved_judge_docker:
+        converted["judge_docker"] = resolved_judge_docker
+    return converted
 
 
 def main() -> int:
@@ -161,7 +198,7 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     converted: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
+    seen_ids: set[int] = set()
     for line_no, line in enumerate(src_path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
@@ -170,7 +207,7 @@ def main() -> int:
         except json.JSONDecodeError as exc:
             raise ValueError(f"{src_path}:{line_no} is not valid JSON: {exc}") from exc
         question = convert_record(record, args.infer_docker, args.judge_docker)
-        if allow and question["task_id"] not in allow:
+        if allow and str(question["task_id"]) not in allow:
             continue
         if question["task_id"] in seen_ids:
             raise ValueError(f"duplicate task_id across lines: {question['task_id']}")
