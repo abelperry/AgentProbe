@@ -20,6 +20,8 @@ class BaseAgent(ABC):
     eval unit, and use them to configure environment variables, CLI flags, etc.
     """
 
+    project_instruction_filenames: tuple[str, ...] = ("CLAUDE.md",)
+
     def __init__(
         self,
         agent_config: AgentConfig,
