@@ -56,3 +56,12 @@ agents:
     version: "2.1.14"
     offline: true
     offline_package_dir: ${OFFLINE_PACKAGE_DIR}
+
+  # Every agent listed here is run against every model above, so uncomment this
+  # to compare the same model across two harnesses. OpenCode speaks the OpenAI
+  # protocol, so a model entry it drives wants format: "openai".
+  # opencode:
+  #   type: "agent_probe.agents.opencode.OpenCodeAgent"
+  #   version: "1.1.21"
+  #   params:
+  #     output_format: "json"
