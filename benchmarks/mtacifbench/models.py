@@ -18,9 +18,17 @@ from pydantic import (
 from agent_probe.core.models import BaseInference, BaseJudgement, BaseQuestion, Error
 
 DEFAULT_INFER_DOCKER = "alexgshaw/break-filter-js-from-html:20251031"
-# Judge containers are deployment-specific. Questions may provide the image;
-# otherwise deployments must configure the public fallback explicitly.
-DEFAULT_JUDGE_DOCKER = os.environ.get("MTACIF_JUDGE_IMAGE", "")
+
+
+def _default_judge_docker() -> str:
+    """Judge image, read per question rather than snapshotted at import.
+
+    Judge containers are deployment-specific and no released question carries
+    judge_docker, so this is normally supplied by MTACIF_JUDGE_IMAGE. Reading it
+    lazily means setting the variable after this module is imported still works.
+    """
+    return os.environ.get("MTACIF_JUDGE_IMAGE", "")
+
 
 PASS_CONCLUSION = "[[满足了该要求]]"
 FAIL_CONCLUSION = "[[没有满足该要求]]"
@@ -75,7 +83,7 @@ class MTACIFBenchQuestion(BaseQuestion):
     function_checklist: list[str] = Field(default_factory=list)
 
     docker: str = DEFAULT_INFER_DOCKER
-    judge_docker: str = DEFAULT_JUDGE_DOCKER
+    judge_docker: str = Field(default_factory=_default_judge_docker)
     workspace_dir: str = "/workspace"
     test_mode: Literal["http", "file"] = "http"
     http_port: int = 5173
