@@ -1,12 +1,8 @@
-# No released question carries judge_docker, so the judge image is configured
-# here. linux/amd64 only: docker pull dayong657/playwright-mcp-base:0.1.0
+# No released question carries judge_docker. linux/amd64 only.
 docker: "dayong657/playwright-mcp-base:0.1.0"
 
 model:
-  # No trailing slash and no trailing "/v1": the judge also runs through the
-  # Claude Code CLI, which appends /v1/messages to this value itself. A trailing
-  # slash yields a doubled separator (".../standard//v1/messages"), which the
-  # gateway rejects with UserInvalidPath.
+  # No trailing slash: the Claude Code CLI appends /v1/messages itself.
   base_url: "${GATEWAY_BASE_URL}"
   api_key: "${GATEWAY_API_KEY}"
   model_name: "deepseek-v4-pro"

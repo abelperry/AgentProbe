@@ -9,8 +9,6 @@ sandbox:
 
 models:
   kimi-k2.6:
-    # No trailing slash: ClaudeCodeAgent passes this straight to
-    # ANTHROPIC_BASE_URL and the CLI appends /v1/messages itself.
     base_url: "${GATEWAY_BASE_URL}"
     api_key: "${GATEWAY_API_KEY}"
     model_name: "kimi-k2.6"
