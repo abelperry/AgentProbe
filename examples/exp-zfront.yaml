@@ -17,7 +17,9 @@ models:
     max_tokens: 64000
   
   kimi-k2.6:
-    base_url: "${GATEWAY_BASE_URL}/"
+    # No trailing slash: ClaudeCodeAgent passes this straight to
+    # ANTHROPIC_BASE_URL and the CLI appends /v1/messages itself.
+    base_url: "${GATEWAY_BASE_URL}"
     api_key: "${GLM_API_KEY}"
     model_name: "kimi-k2.6"
     timeout: 10800

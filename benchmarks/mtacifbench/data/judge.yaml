@@ -1,5 +1,9 @@
 model:
-  base_url: "${GATEWAY_BASE_URL}/"
+  # No trailing slash and no trailing "/v1": the judge also runs through the
+  # Claude Code CLI, which appends /v1/messages to this value itself. A trailing
+  # slash yields a doubled separator (".../standard//v1/messages"), which the
+  # gateway rejects with UserInvalidPath.
+  base_url: "${GATEWAY_BASE_URL}"
   api_key: "${GATEWAY_API_KEY}"
   model_name: "deepseek-v4-pro"
   format: "anthropic"
@@ -8,7 +12,7 @@ model:
 
 agent:
   type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
-  version: "2.1.199"
+  version: "2.1.14"
   # One judge container per round: an online `npm i -g` at that rate hits
   # ECONNRESET on this host, so install the native binary from the offline
   # package instead (the judge image has no npm to fall back on either).

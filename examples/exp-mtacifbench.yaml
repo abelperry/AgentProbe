@@ -31,7 +31,7 @@ models:
   # Anthropic protocol, so this route needs a translating proxy (which is what
   # the axec platform runs) before it can be used here.
   # gemini-3-flash-preview:
-  #   base_url: "${GATEWAY_BASE_URL}/"
+  #   base_url: "${GATEWAY_BASE_URL}"
   #   api_key: "${GATEWAY_API_KEY}"
   #   model_name: "gemini-3-flash-preview"
   #   format: "anthropic"
@@ -53,5 +53,6 @@ datasets:
 agents:
   claude_code:
     type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+    version: "2.1.14"
     offline: true
     offline_package_dir: ${OFFLINE_PACKAGE_DIR}
