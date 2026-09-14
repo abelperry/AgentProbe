@@ -375,7 +375,7 @@ def collect_judge_candidates(
     command_output: str,
     trace_dir: Path,
 ) -> list[str]:
-    """Collect standard parser candidates plus WBS transport fallbacks."""
+    """Collect standard parser candidates plus agent transport fallbacks."""
     from benchmarks.mtacifbench.utils import (  # local to keep checker driver lean
         extract_text_content,
         parse_jsonl_result,

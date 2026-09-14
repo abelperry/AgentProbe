@@ -6,7 +6,7 @@ round's constraint checklist — not against the feature it built.
 
 ## What is scored
 
-Instruction-following is always scored. A WBS functional judge can additionally
+Instruction-following is always scored. A functional judge can additionally
 build or serve the final project and evaluate the task's string-valued
 `function_checklist`; it is opt-in through `judge_if_function.yaml`.
 
@@ -36,7 +36,7 @@ violations.
 
 ## Baseline
 
-Historical pre-WBS reference: `glm-5.3` driving Claude Code 2.1.199, judged by
+Historical reference: `glm-5.3` driving Claude Code 2.1.199, judged by
 `deepseek-v4-pro`, 19 of 20
 tasks valid (one hit an API quota limit mid-inference):
 
@@ -133,9 +133,9 @@ constraint categories. Two things worth knowing before reading the data:
 
 ### Container images
 
-`docker` and `judge_docker` remain optional deployment fields. The WBS JSONL
-omits them: inference falls back to the public web-development image below, and
-the judge must be supplied through `MTACIF_JUDGE_IMAGE`.
+`docker` and `judge_docker` remain optional deployment fields. The released
+questions omit both: inference falls back to the public web-development image
+below, and the judge must be supplied through `MTACIF_JUDGE_IMAGE`.
 
 | Field | Image | Compressed | Role |
 |---|---|---|---|

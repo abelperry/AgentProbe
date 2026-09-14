@@ -180,7 +180,7 @@ Only tasks that produced a verdict enter the denominators.
 
 ## Reference results
 
-Historical pre-WBS reference: `glm-5.3` driving Claude Code 2.1.199, judged by
+Historical reference: `glm-5.3` driving Claude Code 2.1.199, judged by
 `deepseek-v4-pro`. 19 of 20
 tasks valid — one hit an API quota limit mid-inference and is excluded from the
 score rather than counted as a failure.
@@ -208,7 +208,7 @@ measurement. Report the whole configuration alongside any score.
 ## Optional functional measurement
 
 Instruction-following remains independently reported. With
-`function_checklist_eval_enabled`, the WBS extension also builds or serves the
+`function_checklist_eval_enabled`, the functional extension also builds or serves the
 final project and evaluates each string-valued function checklist item through
 Claude Code plus Playwright MCP. Functional failures do not get folded into
 IFCSR or IFISR; they are reported through the separate functional metrics.
