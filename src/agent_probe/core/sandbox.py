@@ -60,12 +60,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 class ResourceSpec(BaseModel):
-    # Per-container limits, not reservations: Docker admits containers whose
-    # limits sum well past the VM's RAM, and an agent container that only shells
-    # out to an HTTP API idles around 10 MiB. Benchmarks that never set this
-    # field would otherwise pin 4 CPU / 4 GiB each and needlessly cap
-    # concurrency on a small Docker VM, so the defaults are overridable from the
-    # environment. AGENTPROBE_SANDBOX_MEMORY_MB / _CPUS accept plain integers.
+    # Per-container limits, not reservations, so the defaults needlessly cap
+    # concurrency on a small Docker VM. Overridable from the environment.
     cpus: int = Field(default_factory=lambda: _env_int("AGENTPROBE_SANDBOX_CPUS", 4))
     memory_mb: int = Field(default_factory=lambda: _env_int("AGENTPROBE_SANDBOX_MEMORY_MB", 4096))
     storage_mb: int = 10240

@@ -54,9 +54,8 @@ class ModelConfig(BaseModel):
         api_type, resolved_model_name = api_name.split(":", 1)
         resolved_model_name = resolved_model_name.split("@", 1)[0]
         data.setdefault("model_name", resolved_model_name)
-        # An explicit base_url + api_key means there is no credentials file to
-        # consult. That shortcut does not apply to the url-based types, whose
-        # base_url still has to be normalized below.
+        # An explicit pair needs no credentials file, but the url-based types
+        # still have to be normalized below.
         if (
             api_type not in cls._URL_BASED_TYPES
             and str(data.get("base_url") or "").strip()
@@ -74,10 +73,8 @@ class ModelConfig(BaseModel):
                 parsed_url = urlparse(raw_url)
                 resolved_base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
             resolved_api_key = str(data.get("api_key") or "no-key")
-            # Assign directly rather than falling through to the `or` below:
-            # raw_url is usually read *from* data["base_url"], so that `or`
-            # would short-circuit on the un-normalized value and silently
-            # discard the suffix stripping this branch exists to do.
+            # Assigned directly: raw_url usually comes *from* data["base_url"],
+            # so the `or` below would short-circuit on the un-normalized value.
             data["base_url"] = resolved_base_url
             data["api_key"] = str(data.get("api_key") or resolved_api_key)
             return cls.model_validate(data)

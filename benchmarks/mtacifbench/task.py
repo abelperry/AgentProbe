@@ -593,9 +593,7 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             return self._error_judgement(
                 question, inference_result, "instruction_following material is missing"
             )
-        # Resolve the judge config before any round runs: a broken config fails
-        # every round identically, so surface it once instead of once per
-        # sandbox launch.
+        # A broken judge config fails every round identically; surface it once.
         try:
             judge_config = self._get_judge_config(ctx)
         except Exception as exc:
@@ -627,18 +625,16 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                     eval_dir=eval_dir,
                 )
 
-        # One round raising must not discard the verdicts its siblings already
-        # earned. Turn a raise into a parse_failed round: _validate_round_judgements
-        # then fails the question with a code -1 error, so it reruns rather than
-        # being scored on a partial judgement.
+        # One round raising must not discard the verdicts its siblings earned;
+        # a parse_failed round makes _validate_round_judgements fail the
+        # question, so it reruns rather than being scored on a partial result.
         settled = await asyncio.gather(
             *[_one(item) for item in question.rounds],
             return_exceptions=True,
         )
         round_results: list[IFRoundResult] = []
         for round_spec, outcome in zip(question.rounds, settled, strict=True):
-            # return_exceptions=True also captures CancelledError. Swallowing
-            # that would defeat an outer timeout or shutdown, so re-raise it.
+            # Swallowing CancelledError would defeat an outer timeout.
             if isinstance(outcome, asyncio.CancelledError):
                 raise outcome
             if isinstance(outcome, BaseException):
@@ -715,8 +711,6 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             for index, (check, expected) in enumerate(
                 zip(result.check_results, checklist, strict=True), start=1
             ):
-                # Both scoring paths stamp the requirement from the trusted
-                # checklist, so a mismatch here means the merge went wrong.
                 if check.index != index or check.requirement != expected.constraint:
                     return f"round {result.round_id} requirement {index} does not match dataset"
             expected_passed = all(item.passed for item in result.check_results)
@@ -813,12 +807,9 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         attempts = max(1, question.judge_parse_retry_max + 1)
         for attempt in range(attempts):
             attempt_dir = round_eval_dir / f"attempt_{attempt}"
-            # Clear the attempt dir before reusing it. Within one judge() call
-            # each attempt gets a fresh path, but a *re-judge* of a round that
-            # previously failed to parse lands on the same attempt_N, and
-            # collect_judge_candidates scans attempt_dir/"traces" — so a stale
-            # trace from the earlier run could be picked up and recorded as this
-            # run's raw_output.
+            # Rejudging a round that failed to parse lands on the same
+            # attempt_N, and collect_judge_candidates scans its traces — so a
+            # stale trace could be recorded as this run's raw_output.
             if attempt_dir.exists():
                 shutil.rmtree(attempt_dir)
             result = await self._run_judge_sandbox(
@@ -927,13 +918,9 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             if not code:
                 fallback_indices.append(index)
                 continue
-            # run_validation_code converts a timeout, a crash inside the dataset
-            # code and a non-bool return into None by itself. This guard is for
-            # what it cannot: a malformed verdict line that is valid JSON but not
-            # an object (``verdict.get`` raises), or an OSError from the scratch
-            # dir. Without it the exception escapes the asyncio.gather below and
-            # takes down the whole question's judgement; degrade to the judge
-            # instead, exactly as every other unknown-verdict path does.
+            # A malformed verdict line is valid JSON but not an object, so
+            # ``verdict.get`` raises; degrade to the judge like every other
+            # unknown-verdict path instead of failing the whole question.
             try:
                 passed = await asyncio.to_thread(
                     run_validation_code,
@@ -1051,8 +1038,6 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
 
     @staticmethod
     def _get_judge_config(ctx: EvalContext) -> JudgeConfig:
-        # Not cached on the instance: one task object serves every question in
-        # the dataset, and a stale config would leak across them.
         config_path = ctx.dataset_config.get_judge_config_path("instruction_following")
         if not config_path:
             raise ValueError("dataset judge_config_path is empty")
@@ -1096,8 +1081,6 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             total_rounds=len(question.rounds),
             round_summaries=self._build_round_summaries(inference_result, []),
             response=inference_result.response,
-            # Nothing functional was evaluated, so say so explicitly rather than
-            # leaving the default that claims a real (empty) function verdict.
             function_checklist_skipped=True,
             error=Error(code=-1, message=message),
         )
