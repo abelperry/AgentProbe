@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import shlex
 import shutil
 import tempfile
@@ -19,11 +18,18 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from agent_probe.config import JudgeConfig
+from agent_probe.config import JudgeConfig, ModelConfig
 from agent_probe.core.models import Error
 from agent_probe.core.sandbox import ExecResult, Sandbox, SandboxResult, SandboxSpec
 from agent_probe.core.task import BaseTask
+from agent_probe.utils.imports import import_class
+from benchmarks.mtacifbench.function_eval import (
+    evaluate_function_checklist,
+    skipped_function_evaluation,
+)
 from benchmarks.mtacifbench.models import (
+    FAIL_CONCLUSION,
+    PASS_CONCLUSION,
     IFCheckResult,
     IFConstraint,
     IFRoundResult,
@@ -34,8 +40,7 @@ from benchmarks.mtacifbench.models import (
     RoundRecord,
 )
 from benchmarks.mtacifbench.prompts import (
-    INSTRUCTION_FOLLOWING_EVALUATION_PROMPT,
-    INSTRUCTION_FOLLOWING_JUDGE_SYSTEM_PROMPT,
+    INSTRUCTION_FOLLOWING_EVALUATION_PROMPT_TEMPLATE,
     MULTIROUND_MAIN_PROMPT_TEMPLATE,
 )
 from benchmarks.mtacifbench.utils import (
@@ -43,12 +48,18 @@ from benchmarks.mtacifbench.utils import (
     diff_round_coverage,
     extract_round_context,
     extract_workspace_archive,
+    find_agent_api_error,
     last_assistant_text,
+    parse_jsonl_result,
     safe_path_component,
     sanitize_api_error_text,
     write_json,
 )
-from benchmarks.mtacifbench.validation import run_validation_code
+from benchmarks.mtacifbench.validation import (
+    collect_judge_candidates,
+    parse_check_results,
+    run_validation_code,
+)
 
 if TYPE_CHECKING:
     from agent_probe.core.executor import EvalContext
@@ -58,38 +69,15 @@ CONTAINER_WORKSPACE = "/workspace"
 # would auto-load candidate-controlled CLAUDE.md / .claude/settings as judge
 # instructions.
 CONTAINER_JUDGE_WORKDIR = "/tmp"
-PASS_CONCLUSION = "[[满足了该要求]]"
-FAIL_CONCLUSION = "[[没有满足该要求]]"
 JUDGE_RAW_OUTPUT_EXCERPT_LIMIT = 4000
-
-_CHECK_BLOCK_PATTERN = re.compile(
-    r"(?:\*\*)?\[要求(\d+)-开始\](?:\*\*)?\s*\n"
-    r"要求：(.*?)\s*\n"
-    r"分析：(.*?)\s*\n"
-    r"结论：(.*?)\s*\n"
-    r"(?:\*\*)?\[要求\1-结束\](?:\*\*)?",
-    re.DOTALL,
-)
-# Negative forms are matched first: "没有满足了该要求" contains "满足了该要求".
-_NEGATIVE_CONCLUSION_PATTERNS = (
-    r"\[\[\s*没有满足该要求\s*\]\]",
-    r"\[\s*没有满足该要求\s*\]",
-    r"没有满足该要求",
-    r"\[\[\s*没有满足了该要求\s*\]\]",
-    r"\[\s*没有满足了该要求\s*\]",
-    r"没有满足了该要求",
-)
-_POSITIVE_CONCLUSION_PATTERNS = (
-    r"\[\[\s*满足了该要求\s*\]\]",
-    r"\[\s*满足了该要求\s*\]",
-    r"满足了该要求",
-)
+INCOMPLETE_RERUN_MAX_RETRIES = 2
+DEFAULT_PROJECT_INSTRUCTIONS_FILENAME = "CLAUDE.md"
+SNAPSHOT_EXCLUDES = ("node_modules", ".git", "__pycache__")
+DEFAULT_HTTP_BUILD_TIMEOUT_SEC = 600
 
 
 class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIFBenchJudgement]):
     """Multi-round instruction-following benchmark."""
-
-    _judge_config: JudgeConfig | None = None
 
     # ------------------------------------------------------------------
     # Inference
@@ -100,10 +88,56 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         question: MTACIFBenchQuestion,
         ctx: EvalContext,
     ) -> MTACIFBenchInference:
+        """Run the complete multi-round inference, retrying partial attempts."""
+        max_attempts = INCOMPLETE_RERUN_MAX_RETRIES + 1
+        last_inference: MTACIFBenchInference | None = None
+        for attempt in range(1, max_attempts + 1):
+            self._reset_inference_attempt(ctx.output_dir, question.qid())
+            last_inference = await self._inference_once(question, ctx)
+            if last_inference.error is None:
+                if attempt > 1:
+                    logger.info(
+                        "[{}] incomplete inference rerun succeeded on attempt {}/{}",
+                        question.qid(),
+                        attempt,
+                        max_attempts,
+                    )
+                return last_inference
+            if attempt < max_attempts:
+                logger.warning(
+                    "[{}] inference attempt {}/{} incomplete; retrying: {}",
+                    question.qid(),
+                    attempt,
+                    max_attempts,
+                    last_inference.error.message,
+                )
+        assert last_inference is not None
+        return last_inference
+
+    async def _inference_once(
+        self,
+        question: MTACIFBenchQuestion,
+        ctx: EvalContext,
+    ) -> MTACIFBenchInference:
         infer_dir = ctx.output_dir / "infer" / safe_path_component(question.qid())
         material_root = infer_dir / "instruction_following"
         round_records: list[RoundRecord] = []
         workspace_tar_path: Path | None = None
+        effective_agent_params = dict(ctx.agent_config.params)
+        effective_agent_params.pop("append_system_prompt", None)
+        effective_agent_config = ctx.agent_config.model_copy(
+            update={"params": effective_agent_params}
+        )
+        project_instruction_candidates = self._project_instruction_candidates(
+            effective_agent_config
+        )
+        project_instructions_filename = project_instruction_candidates[0]
+        project_instructions_path = str(
+            Path(question.workspace_dir) / project_instructions_filename
+        )
+        had_original_project_instructions = False
+        original_project_instructions_content = ""
+        project_instructions_runtime_injected = False
         # Per-question state lives in this closure — the task instance is shared
         # across every question in the dataset.
         state: dict[str, Any] = {
@@ -113,7 +147,39 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         }
 
         async def _setup(sb: Sandbox) -> None:
+            nonlocal project_instructions_filename
+            nonlocal project_instructions_path
+            nonlocal had_original_project_instructions
+            nonlocal original_project_instructions_content
+            nonlocal project_instructions_runtime_injected
+
             await sb.exec_cmd(f"mkdir -p {shlex.quote(question.workspace_dir)}")
+            project_instructions = question.repository_policy.strip()
+            for filename in project_instruction_candidates:
+                candidate_path = str(Path(question.workspace_dir) / filename)
+                quoted_path = shlex.quote(candidate_path)
+                exists_result = await sb.exec_cmd(
+                    f"if [ -f {quoted_path} ]; then printf 1; else printf 0; fi",
+                    timeout_sec=30,
+                )
+                if exists_result.exit_code != 0:
+                    raise RuntimeError(
+                        exists_result.stderr or f"failed to inspect {candidate_path}"
+                    )
+                if not exists_result.stdout.strip().endswith("1"):
+                    continue
+                project_instructions_filename = filename
+                project_instructions_path = candidate_path
+                had_original_project_instructions = True
+                original_project_instructions_content = await sb.read_file(candidate_path)
+                break
+
+            merged_content = self._merge_project_instructions(
+                existing_content=original_project_instructions_content,
+                project_instructions=project_instructions,
+            )
+            await sb.write_file(project_instructions_path, merged_content)
+            project_instructions_runtime_injected = True
 
         async def _finish_round(sb: Sandbox, sandbox_result: SandboxResult) -> None:
             """Record the just-finished round and stage its judge material."""
@@ -146,6 +212,10 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                 round_id=round_spec.round_id,
                 context=context,
                 response=response,
+                project_instructions_filename=project_instructions_filename,
+                project_instructions_runtime_injected=project_instructions_runtime_injected,
+                had_original_project_instructions=had_original_project_instructions,
+                original_project_instructions_content=original_project_instructions_content,
             )
             round_records.append(
                 RoundRecord(
@@ -187,9 +257,20 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                 infer_dir / "round_records.json",
                 [record.model_dump(mode="json") for record in round_records],
             )
+            await self._restore_runtime_project_instructions(
+                sb=sb,
+                project_instructions_path=project_instructions_path,
+                project_instructions_runtime_injected=project_instructions_runtime_injected,
+                had_original_project_instructions=had_original_project_instructions,
+                original_project_instructions_content=original_project_instructions_content,
+            )
             target = infer_dir / "workspace.tar.gz"
             try:
-                await sb.download_directory(question.workspace_dir, target)
+                await sb.download_directory(
+                    question.workspace_dir,
+                    target,
+                    exclude_dirs=SNAPSHOT_EXCLUDES,
+                )
                 workspace_tar_path = target
             except Exception as exc:
                 logger.warning("[{}] workspace export failed: {}", ctx.log_tag(), exc)
@@ -201,22 +282,22 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             prompt=self._build_main_prompt(question, 0)
             if question.rounds
             else question.task_description,
-            agent_config=ctx.agent_config,
+            agent_config=effective_agent_config,
             model_cfg=ctx.model_config,
             output_dir=str(infer_dir),
-            env_vars=ctx.agent_config.envs if ctx.agent_config else {},
+            env_vars=effective_agent_config.envs,
             workspace=question.workspace_dir,
-            timeout_sec=ctx.model_config.timeout,
+            timeout_sec=self._inference_execution_timeout(question, ctx.model_config),
+            agent_timeout_sec=ctx.model_config.timeout,
             # Constraints span rounds ("keep last round's naming", "every reply
             # must start with ..."), so all rounds share one conversation.
             keep_session=True,
-            append_system_prompt=question.system_prompt,
             on_setup=_setup,
             on_complete=_complete,
             on_nextround=_next_round,
         )
         result = await Sandbox(spec).run()
-        response = result.last_assistant.content_text if result.last_assistant else ""
+        response = round_records[-1].result_response if round_records else ""
 
         inference = MTACIFBenchInference(
             response=sanitize_api_error_text(response),
@@ -227,6 +308,103 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         )
         inference.error = self._validate_inference(question, inference, material_root)
         return inference
+
+    @staticmethod
+    def _inference_execution_timeout(
+        question: MTACIFBenchQuestion,
+        model_config: ModelConfig,
+    ) -> int:
+        round_count = max(1, len(question.rounds))
+        per_round_timeout = max(1, int(model_config.timeout))
+        build_timeout = max(
+            0,
+            int(question.http_build_timeout or DEFAULT_HTTP_BUILD_TIMEOUT_SEC),
+        )
+        setup_and_export_grace = max(600, build_timeout + 300)
+        return per_round_timeout * round_count + setup_and_export_grace
+
+    @staticmethod
+    def _project_instruction_candidates(agent_config: Any) -> tuple[str, ...]:
+        agent_cls = import_class(agent_config.type)
+        raw_candidates = getattr(
+            agent_cls,
+            "project_instruction_filenames",
+            (DEFAULT_PROJECT_INSTRUCTIONS_FILENAME,),
+        )
+        candidates = tuple(str(item).strip() for item in raw_candidates if str(item).strip())
+        if not candidates:
+            return (DEFAULT_PROJECT_INSTRUCTIONS_FILENAME,)
+        if any(Path(item).name != item for item in candidates):
+            raise ValueError("project instruction filenames must be plain filenames")
+        return candidates
+
+    @staticmethod
+    def _merge_project_instructions(
+        *,
+        existing_content: str,
+        project_instructions: str,
+    ) -> str:
+        normalized_existing = str(existing_content or "").rstrip()
+        normalized_instructions = str(project_instructions or "").strip()
+        if not normalized_instructions:
+            return f"{normalized_existing}\n" if normalized_existing else ""
+        if not normalized_existing:
+            return f"{normalized_instructions}\n"
+        if normalized_existing.endswith(normalized_instructions):
+            return f"{normalized_existing}\n"
+        return f"{normalized_existing}\n\n{normalized_instructions}\n"
+
+    @staticmethod
+    async def _restore_runtime_project_instructions(
+        *,
+        sb: Sandbox,
+        project_instructions_path: str,
+        project_instructions_runtime_injected: bool,
+        had_original_project_instructions: bool,
+        original_project_instructions_content: str,
+    ) -> None:
+        if not project_instructions_runtime_injected:
+            return
+        if had_original_project_instructions:
+            await sb.write_file(
+                project_instructions_path,
+                original_project_instructions_content,
+            )
+            return
+        await sb.exec_cmd(
+            f"rm -f {shlex.quote(project_instructions_path)}",
+            timeout_sec=30,
+        )
+
+    @staticmethod
+    def _sanitize_snapshot_project_instructions(
+        *,
+        workspace_path: Path,
+        project_instructions_filename: str,
+        project_instructions_runtime_injected: bool,
+        had_original_project_instructions: bool,
+        original_project_instructions_content: str,
+    ) -> None:
+        if not project_instructions_runtime_injected:
+            return
+        instructions_path = workspace_path / project_instructions_filename
+        if had_original_project_instructions:
+            instructions_path.write_text(
+                original_project_instructions_content,
+                encoding="utf-8",
+            )
+        elif instructions_path.exists():
+            instructions_path.unlink()
+
+    @staticmethod
+    def _reset_inference_attempt(output_dir: Path, qid: str) -> None:
+        safe_qid = safe_path_component(qid)
+        for attempt_path in (
+            output_dir / "infer" / safe_qid,
+            output_dir / "eval" / safe_qid,
+        ):
+            if attempt_path.exists():
+                shutil.rmtree(attempt_path)
 
     def _validate_inference(
         self,
@@ -273,6 +451,9 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                         f"round_id={record.round_id}: missing={missing_files}"
                     ),
                 )
+            api_error = find_agent_api_error(record.result_response, record.result_excerpt)
+            if api_error:
+                return Error(code=-3, message=api_error)
         if inference.agent_error is not None:
             return Error(
                 code=inference.agent_error.code,
@@ -299,7 +480,21 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         reply = last_assistant_text(context)
         if reply:
             return sanitize_api_error_text(reply)
-        return sanitize_api_error_text((exec_result.stdout or "").strip())
+        parsed_stdout = parse_jsonl_result(exec_result.stdout)
+        parsed_stderr = parse_jsonl_result(exec_result.stderr)
+        api_error = find_agent_api_error(
+            parsed_stdout,
+            parsed_stderr,
+            exec_result.stdout,
+            exec_result.stderr,
+        )
+        if api_error:
+            return api_error
+        return sanitize_api_error_text(
+            parsed_stdout
+            or parsed_stderr
+            or (exec_result.stderr or exec_result.stdout or "").strip()
+        )
 
     @staticmethod
     def _read_round_context(
@@ -331,6 +526,10 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         round_id: int,
         context: str,
         response: str,
+        project_instructions_filename: str,
+        project_instructions_runtime_injected: bool,
+        had_original_project_instructions: bool,
+        original_project_instructions_content: str,
     ) -> Path:
         """Snapshot everything the judge will need for this round.
 
@@ -346,8 +545,19 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             snapshot_dir = staging_dir / "workspace_snapshot"
             with tempfile.TemporaryDirectory(prefix="mtacif_snapshot_") as tmp:
                 tar_path = Path(tmp) / "workspace.tar.gz"
-                await sb.download_directory(question.workspace_dir, tar_path)
+                await sb.download_directory(
+                    question.workspace_dir,
+                    tar_path,
+                    exclude_dirs=SNAPSHOT_EXCLUDES,
+                )
                 await asyncio.to_thread(extract_workspace_archive, tar_path, snapshot_dir)
+            self._sanitize_snapshot_project_instructions(
+                workspace_path=snapshot_dir,
+                project_instructions_filename=project_instructions_filename,
+                project_instructions_runtime_injected=project_instructions_runtime_injected,
+                had_original_project_instructions=had_original_project_instructions,
+                original_project_instructions_content=original_project_instructions_content,
+            )
             (staging_dir / "context.json").write_text(context, encoding="utf-8")
             (staging_dir / "last_response.txt").write_text(response, encoding="utf-8")
 
@@ -382,7 +592,17 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             return self._error_judgement(
                 question, inference_result, "instruction_following material is missing"
             )
-
+        # Resolve the judge config before any round runs: a broken config fails
+        # every round identically, so surface it once instead of once per
+        # sandbox launch.
+        try:
+            judge_config = self._get_judge_config(ctx)
+        except Exception as exc:
+            return self._error_judgement(
+                question,
+                inference_result,
+                f"invalid judge config: {exc}",
+            )
         eval_dir = ctx.output_dir / "eval" / safe_path_component(question.qid())
         material_root = inference_result.material_dir
         cached = self._reusable_round_results(prev_judgement, question)
@@ -407,24 +627,69 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                 )
 
         round_results = list(await asyncio.gather(*[_one(item) for item in question.rounds]))
-        unresolved = [item.round_id for item in round_results if item.parse_failed]
-        all_passed = bool(round_results) and all(
-            item.passed and not item.parse_failed for item in round_results
-        )
-        return MTACIFBenchJudgement(
+        if judge_config.function_checklist_eval_enabled:
+            function_evaluation = await evaluate_function_checklist(
+                question=question,
+                inference_result=inference_result,
+                ctx=ctx,
+                judge_config=judge_config,
+                eval_dir=eval_dir,
+            )
+        else:
+            function_evaluation = skipped_function_evaluation(question)
+        judgement_error = self._validate_round_judgements(question, round_results)
+        all_passed = bool(round_results) and all(item.passed for item in round_results)
+        judgement = MTACIFBenchJudgement(
             category=question.category,
             instruction_following_checks=round_results,
             instruction_following_score=1.0 if all_passed else 0.0,
             total_rounds=len(question.rounds),
             round_summaries=self._build_round_summaries(inference_result, round_results),
             response=inference_result.response,
-            error=Error(
-                code=-1,
-                message=f"instruction_following verdict unresolved for rounds {unresolved}",
-            )
-            if unresolved
-            else None,
+            checks=function_evaluation.checks,
+            function_score=function_evaluation.function_score,
+            function_checklist_skipped=function_evaluation.function_checklist_skipped,
+            build_success=function_evaluation.build_success,
+            error=Error(code=-1, message=judgement_error) if judgement_error else None,
         )
+        write_json(eval_dir / "eval_result.json", judgement.model_dump(mode="json"))
+        return judgement
+
+    @staticmethod
+    def _validate_round_judgements(
+        question: MTACIFBenchQuestion,
+        results: list[IFRoundResult],
+    ) -> str | None:
+        """Reject a judgement that does not fully cover the dataset checklist.
+
+        Marking the judgement in error keeps the inference and re-runs only the
+        judge. Without this, a verdict that silently covers fewer constraints
+        than the round declares would be scored as a clean pass.
+        """
+        expected_ids = [item.round_id for item in question.rounds]
+        actual_ids = [item.round_id for item in results]
+        if actual_ids != expected_ids:
+            return f"IF round coverage mismatch: expected={expected_ids}, actual={actual_ids}"
+        for round_item, result in zip(question.rounds, results, strict=True):
+            if result.parse_failed:
+                return f"round {result.round_id} IF judge output could not be parsed"
+            checklist = question.checklist_for(round_item.round_id)
+            if len(result.check_results) != len(checklist):
+                return (
+                    f"round {result.round_id} constraint count mismatch: "
+                    f"{len(result.check_results)} != {len(checklist)}"
+                )
+            for index, (check, expected) in enumerate(
+                zip(result.check_results, checklist, strict=True), start=1
+            ):
+                # Both scoring paths stamp the requirement from the trusted
+                # checklist, so a mismatch here means the merge went wrong.
+                if check.index != index or check.requirement != expected.constraint:
+                    return f"round {result.round_id} requirement {index} does not match dataset"
+            expected_passed = all(item.passed for item in result.check_results)
+            if result.passed != expected_passed:
+                return f"round {result.round_id} aggregate verdict is inconsistent"
+        return None
 
     @staticmethod
     def _reusable_round_results(
@@ -440,7 +705,7 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             round_spec = expected.get(result.round_id)
             if round_spec is None or result.parse_failed:
                 continue
-            if len(result.check_results) != len(round_spec.instruction_following_checklist):
+            if len(result.check_results) != len(question.checklist_for(result.round_id)):
                 continue
             reusable[result.round_id] = result
         return reusable
@@ -455,7 +720,7 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         eval_dir: Path,
     ) -> IFRoundResult:
         round_id = round_spec.round_id
-        checklist = list(round_spec.instruction_following_checklist)
+        checklist = question.checklist_for(round_id)
         round_eval_dir = eval_dir / "instruction_following" / f"round_{round_id}"
 
         if not checklist:
@@ -532,15 +797,22 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                     symptoms[:200],
                 )
                 continue
-            for candidate in self._parse_candidates(result):
-                candidate_results = self._parse_check_results(candidate, fallback)
+            primary = result.last_assistant.content_text if result.last_assistant else ""
+            command_output = result.last.stdout if result.last else ""
+            candidates = collect_judge_candidates(
+                primary,
+                command_output,
+                attempt_dir / "traces",
+            )
+            raw_output = candidates[0] if candidates else primary or command_output
+            for candidate in candidates:
+                candidate_results = parse_check_results(candidate, fallback)
                 if candidate_results is not None:
                     parsed = candidate_results
                     raw_output = candidate
                     break
             if parsed is not None:
                 break
-            raw_output = next(iter(self._parse_candidates(result)), "")
             symptoms = f"期望 {len(fallback)} 项判定，解析失败（attempt {attempt}）"
             logger.warning(
                 "[{}] round {} judge output did not parse (attempt {})",
@@ -661,7 +933,6 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             env_vars=judge_cfg.agent.envs if judge_cfg.agent else {},
             workspace=CONTAINER_JUDGE_WORKDIR,
             timeout_sec=question.eval_timeout,
-            append_system_prompt=INSTRUCTION_FOLLOWING_JUDGE_SYSTEM_PROMPT,
             on_setup=_setup,
         )
         return await Sandbox(spec).run()
@@ -676,101 +947,13 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         checklist_text = "\n".join(
             f"[要求{index + 1}]：{item.constraint}" for index, item in enumerate(checklist)
         )
-        return INSTRUCTION_FOLLOWING_EVALUATION_PROMPT.format(
+        return INSTRUCTION_FOLLOWING_EVALUATION_PROMPT_TEMPLATE.format(
             workspace_path=CONTAINER_WORKSPACE,
             task_description=question.task_description,
-            checklist=checklist_text,
-            context_fence=self._fence_for(context),
-            context=context or "[]",
-            response_fence=self._fence_for(response),
+            context=context,
             response=response,
+            checklist=checklist_text,
         )
-
-    @staticmethod
-    def _fence_for(payload: str) -> str:
-        """A code fence longer than any backtick run inside *payload*.
-
-        The evidence is model-controlled text. A fixed ``` fence would let a
-        reply containing backticks close the block early, promoting the rest of
-        the evidence to prompt-level text.
-        """
-        longest = max((len(run) for run in re.findall(r"`+", payload or "")), default=0)
-        return "`" * max(3, longest + 1)
-
-    @staticmethod
-    def _parse_candidates(result: SandboxResult) -> list[str]:
-        """Judge texts worth trying, most authoritative first."""
-        candidates: list[str] = []
-        if result.last_assistant and result.last_assistant.content_text.strip():
-            candidates.append(result.last_assistant.content_text.strip())
-        if result.last and (result.last.stdout or "").strip():
-            candidates.append(result.last.stdout.strip())
-        deduped: list[str] = []
-        for candidate in candidates:
-            if candidate not in deduped:
-                deduped.append(candidate)
-        return deduped
-
-    @classmethod
-    def _parse_check_results(
-        cls,
-        output: str,
-        checklist: list[IFConstraint],
-    ) -> list[IFCheckResult] | None:
-        """Parse the judge verdict, fail-closed.
-
-        ``None`` means "we did not obtain a verdict" and triggers a retry. It is
-        never silently turned into a pass — a degraded judge must not inflate
-        scores.
-        """
-        expected = len(checklist)
-        if expected == 0:
-            return []
-        if not output:
-            return None
-
-        results: list[IFCheckResult] = []
-        for match in _CHECK_BLOCK_PATTERN.finditer(output):
-            conclusion = cls._normalize_conclusion(match.group(4).strip())
-            if conclusion is None:
-                return None
-            results.append(
-                IFCheckResult(
-                    index=int(match.group(1)),
-                    requirement=match.group(2).strip(),
-                    analysis=match.group(3).strip(),
-                    conclusion=conclusion,
-                    source="judge",
-                )
-            )
-        if len(results) != expected:
-            return None
-
-        expected_markers = [str(index) for index in range(1, expected + 1)]
-        if re.findall(r"\[要求(\d+)-开始\]", output) != expected_markers:
-            return None
-        if re.findall(r"\[要求(\d+)-结束\]", output) != expected_markers:
-            return None
-        if [item.index for item in results] != list(range(1, expected + 1)):
-            return None
-        # The requirement text must match the trusted checklist verbatim, so a
-        # requirement forged inside the untrusted evidence cannot be scored.
-        for index, item in enumerate(results):
-            if item.requirement != checklist[index].constraint.strip():
-                return None
-        return results
-
-    @staticmethod
-    def _normalize_conclusion(conclusion: str) -> str | None:
-        """Absorb formatting drift without ever flipping polarity."""
-        text = (conclusion or "").strip()
-        for pattern in _NEGATIVE_CONCLUSION_PATTERNS:
-            if re.search(pattern, text):
-                return FAIL_CONCLUSION
-        for pattern in _POSITIVE_CONCLUSION_PATTERNS:
-            if re.search(pattern, text):
-                return PASS_CONCLUSION
-        return None
 
     @staticmethod
     def _build_round_result(
@@ -805,12 +988,17 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
         write_json(round_eval_dir / "round_results.json", result.model_dump(mode="json"))
         return result
 
-    def _get_judge_config(self, ctx: EvalContext) -> JudgeConfig:
-        if self._judge_config is None:
-            self._judge_config = JudgeConfig.from_yaml(
-                Path(ctx.dataset_config.get_judge_config_path("instruction_following"))
-            )
-        return self._judge_config
+    @staticmethod
+    def _get_judge_config(ctx: EvalContext) -> JudgeConfig:
+        # Not cached on the instance: one task object serves every question in
+        # the dataset, and a stale config would leak across them.
+        config_path = ctx.dataset_config.get_judge_config_path("instruction_following")
+        if not config_path:
+            raise ValueError("dataset judge_config_path is empty")
+        path = Path(config_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"judge config not found: {path}")
+        return JudgeConfig.from_yaml(path)
 
     @staticmethod
     def _build_round_summaries(
@@ -847,6 +1035,9 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             total_rounds=len(question.rounds),
             round_summaries=self._build_round_summaries(inference_result, []),
             response=inference_result.response,
+            # Nothing functional was evaluated, so say so explicitly rather than
+            # leaving the default that claims a real (empty) function verdict.
+            function_checklist_skipped=True,
             error=Error(code=-1, message=message),
         )
 
@@ -857,15 +1048,12 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
     def collect_metrics(
         self, judgements: list[MTACIFBenchJudgement]
     ) -> tuple[dict[str, float], int]:
-        # Only judgements that actually produced a verdict enter the denominator;
-        # infrastructure failures must show up as missing coverage, not as
-        # constraint violations.
+        total_tasks = len(judgements)
         valid = [
             judgement
             for judgement in judgements
             if judgement is not None and judgement.error is None
         ]
-        strict_pass = 0
         total_rounds = 0
         passed_rounds = 0
         total_constraints = 0
@@ -881,14 +1069,43 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                     total_constraints += 1
                     if check.passed:
                         passed_constraints += 1
-            if rounds and all(item.passed for item in rounds):
-                strict_pass += 1
-
-        return {
-            "IFSSR": strict_pass / len(valid) * 100 if valid else 0.0,
+        success_count = len(valid)
+        scores = {
+            "num_total": float(total_tasks),
+            "num_success": float(success_count),
             "IFISR": passed_rounds / total_rounds * 100 if total_rounds else 0.0,
             "IFCSR": passed_constraints / total_constraints * 100 if total_constraints else 0.0,
-            "num_strict_pass": float(strict_pass),
-            "num_rounds": float(total_rounds),
-            "num_constraints": float(total_constraints),
-        }, len(valid)
+        }
+        if any(not item.function_checklist_skipped for item in valid):
+            function_valid = [item for item in valid if not item.function_checklist_skipped]
+            total_function_checks = sum(len(item.checks) for item in function_valid)
+            passed_function_checks = sum(
+                check.score == 1.0 for item in function_valid for check in item.checks
+            )
+            strict_function_passes = sum(
+                bool(item.checks) and all(check.score == 1.0 for check in item.checks)
+                for item in function_valid
+            )
+            build_successes = sum(item.build_success is not False for item in function_valid)
+            function_count = len(function_valid)
+            scores.update(
+                {
+                    "average": (
+                        sum(float(item.function_score) for item in function_valid)
+                        / function_count
+                        * 100
+                        if function_count
+                        else 0.0
+                    ),
+                    "ISR": (
+                        strict_function_passes / function_count * 100 if function_count else 0.0
+                    ),
+                    "CSR": (
+                        passed_function_checks / total_function_checks * 100
+                        if total_function_checks
+                        else 0.0
+                    ),
+                    "BSR": (build_successes / function_count * 100 if function_count else 0.0),
+                }
+            )
+        return scores, success_count
