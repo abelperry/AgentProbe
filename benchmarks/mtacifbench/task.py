@@ -944,7 +944,7 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
                 )
             except Exception as exc:  # noqa: BLE001 - degrade to the judge
                 logger.warning(
-                    "[{} round {} #{}] validation code raised {}: {}; " "falling back to judge",
+                    "[{} round {} #{}] validation code raised {}: {}; falling back to judge",
                     log_tag,
                     round_id,
                     index + 1,

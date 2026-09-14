@@ -123,6 +123,16 @@ async def evaluate_function_checklist(
     if runtime_error:
         return _incomplete_outcome(checklist, runtime_error)
 
+    # Both the build sandbox and the per-item judge sandbox run on this image.
+    # No released question carries judge_docker, so it normally comes from
+    # MTACIF_JUDGE_IMAGE; an empty value would reach the sandbox API and fail
+    # there with an error that says nothing about the missing config.
+    if not str(question.judge_docker or "").strip():
+        return _incomplete_outcome(
+            checklist,
+            "no judge image: set MTACIF_JUDGE_IMAGE or give the question a judge_docker value",
+        )
+
     workspace_archive = inference_result.workspace_tar_path
     if workspace_archive is None or not workspace_archive.is_file():
         return _incomplete_outcome(checklist, "workspace archive not found")
