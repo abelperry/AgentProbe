@@ -60,8 +60,6 @@ def _env_int(name: str, default: int) -> int:
 
 
 class ResourceSpec(BaseModel):
-    # Per-container limits, not reservations, so the defaults needlessly cap
-    # concurrency on a small Docker VM. Overridable from the environment.
     cpus: int = Field(default_factory=lambda: _env_int("AGENTPROBE_SANDBOX_CPUS", 4))
     memory_mb: int = Field(default_factory=lambda: _env_int("AGENTPROBE_SANDBOX_MEMORY_MB", 4096))
     storage_mb: int = 10240

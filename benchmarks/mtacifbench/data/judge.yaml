@@ -1,8 +1,6 @@
-# No released question carries judge_docker. linux/amd64 only.
 docker: "dayong657/playwright-mcp-base:0.1.0"
 
 model:
-  # No trailing slash: the Claude Code CLI appends /v1/messages itself.
   base_url: "${GATEWAY_BASE_URL}"
   api_key: "${GATEWAY_API_KEY}"
   model_name: "deepseek-v4-pro"

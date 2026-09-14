@@ -124,7 +124,6 @@ async def evaluate_function_checklist(
     if runtime_error:
         return _incomplete_outcome(checklist, runtime_error)
 
-    # Both the build sandbox and the per-item judge sandbox run on this image.
     try:
         judge_image = resolve_judge_image(question, judge_config)
     except ValueError as exc:
