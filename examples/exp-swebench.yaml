@@ -9,7 +9,7 @@ sandbox:
 
 models:
   kimi-k2.6:
-    base_url: "${GATEWAY_BASE_URL}/"
+    base_url: "${GATEWAY_BASE_URL}"
     api_key: "${GATEWAY_API_KEY}"
     model_name: "kimi-k2.6"
     thinking: "high"

@@ -41,6 +41,11 @@ class ClaudeCodeAgent(BaseAgent):
     _NPM_PACKAGE = "@anthropic-ai/claude-code"
     _PACKAGE_BASENAME = "anthropic-ai-claude-code"
     _OFFLINE_INSTALL_PATH = "/tmp/offline_package"
+    # Optional gateway normalizer (params.gateway_normalizer). Deliberately a
+    # different port from OpenCodeAgent's so the two can coexist in one image.
+    _GATEWAY_NORMALIZER_PATH = "/tmp/agentprobe_claude_gateway_proxy.mjs"
+    _GATEWAY_NORMALIZER_LOG = "/tmp/agentprobe_claude_gateway_proxy.log"
+    _GATEWAY_NORMALIZER_PORT = 18081
     # Seconds reserved between killing claude and the sandbox wait_for cap,
     # so on_complete (patch + judge eval) still gets to run.
     _POST_CLAUDE_BUFFER_SEC = 600
@@ -125,6 +130,11 @@ class ClaudeCodeAgent(BaseAgent):
         if result.exit_code != 0:
             return result
 
+        if self.agent_config.params.get("gateway_normalizer"):
+            normalizer = await self._start_gateway_normalizer(sb)
+            if normalizer.exit_code != 0:
+                return normalizer
+
         await self._patch_exit_plan_mode(sb)
 
         # Upload MCP config if provided
@@ -133,6 +143,73 @@ class ClaudeCodeAgent(BaseAgent):
             await sb.write_file("/tmp/mcp_config.json", content)
             logger.debug("MCP config uploaded to /tmp/mcp_config.json")
         return result
+
+    async def _start_gateway_normalizer(self, sb: Sandbox) -> ExecResult:
+        """Route the CLI through a normalizing proxy.
+
+        Opt-in via ``params.gateway_normalizer``. Some OpenAI-compatible
+        gateways emit Anthropic ``thinking`` blocks with an empty ``signature``
+        and never send a ``signature_delta``; the CLI rejects those mid-stream
+        ("Content block is not a text block") and retries the whole call without
+        streaming.
+
+        Note this uses claude_code_stream_proxy.mjs, not the OpenCode proxy:
+        the latter converts the call to non-streaming, and on such gateways a
+        large non-streaming request (max_tokens=32000) never returns, so it
+        trades a slow path for a hang. The streaming proxy forwards the upstream
+        SSE untouched apart from the signature it has to repair.
+        """
+        upstream = self.model_config.base_url
+        if not upstream:
+            return ExecResult(stdout="", stderr="gateway_normalizer needs base_url", exit_code=1)
+
+        proxy_source = (
+            Path(__file__).with_name("claude_code_stream_proxy.mjs").read_text(encoding="utf-8")
+        )
+        await sb.write_file(self._GATEWAY_NORMALIZER_PATH, proxy_source)
+
+        # The proxy strips a leading "/v1" from the incoming path and appends the
+        # rest to this base, so it needs the "/v1" suffix the CLI would have
+        # added itself.
+        upstream_api = upstream.rstrip("/")
+        if not upstream_api.endswith("/v1"):
+            upstream_api = f"{upstream_api}/v1"
+
+        start_command = " ".join(
+            (
+                f"AGENTPROBE_UPSTREAM_BASE_URL={shlex.quote(upstream_api)}",
+                f"AGENTPROBE_PROXY_PORT={self._GATEWAY_NORMALIZER_PORT}",
+                "nohup node",
+                shlex.quote(self._GATEWAY_NORMALIZER_PATH),
+                f">{shlex.quote(self._GATEWAY_NORMALIZER_LOG)} 2>&1 &",
+            )
+        )
+        started = await sb.exec_cmd(start_command, timeout_sec=30)
+        if started.exit_code != 0:
+            return started
+
+        health_url = f"http://127.0.0.1:{self._GATEWAY_NORMALIZER_PORT}/healthz"
+        health_script = (
+            f"fetch({json.dumps(health_url)})"
+            ".then(response => process.exit(response.ok ? 0 : 1))"
+            ".catch(() => process.exit(1))"
+        )
+        health_command = (
+            "for attempt in $(seq 1 60); do "
+            f"node -e {shlex.quote(health_script)} && exit 0; "
+            "sleep 0.5; "
+            "done; "
+            f"tail -50 {shlex.quote(self._GATEWAY_NORMALIZER_LOG)} >&2; exit 1"
+        )
+        health = await sb.exec_cmd(health_command, timeout_sec=60)
+        if health.exit_code != 0:
+            return health
+
+        # Point the CLI at the proxy. It appends /v1/messages itself, so hand it
+        # the bare origin.
+        sb.env_vars["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{self._GATEWAY_NORMALIZER_PORT}"
+        logger.debug("Claude Code routed through gateway normalizer -> {}", upstream_api)
+        return health
 
     async def _ensure_npm(self, sb: Sandbox) -> ExecResult:
         """Ensure npm is available before installing Claude Code."""

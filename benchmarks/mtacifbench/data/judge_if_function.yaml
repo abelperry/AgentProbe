@@ -1,0 +1,32 @@
+docker: "dayong657/playwright-mcp-base:0.1.0"
+
+model:
+  base_url: "${GATEWAY_BASE_URL}"
+  api_key: "${GATEWAY_API_KEY}"
+  model_name: "deepseek-v4-pro"
+  format: "anthropic"
+  timeout: 37260
+  max_tokens: 64000
+
+agent:
+  type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+  version: "2.1.14"
+  offline: true
+  offline_package_dir: ${OFFLINE_PACKAGE_DIR}
+
+function_checklist_eval_enabled: true
+function_model:
+  base_url: "${GATEWAY_BASE_URL}"
+  api_key: "${GATEWAY_API_KEY}"
+  model_name: "claude-sonnet-4-6-thinking"
+  format: "anthropic"
+  timeout: 3600
+  max_tokens: 80000
+  thinking: "high"
+  max_thinking_tokens: 16000
+function_agent:
+  type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
+  version: "2.1.14"
+  offline: true
+  offline_package_dir: ${OFFLINE_PACKAGE_DIR}
+  mcp_host_path: "config/mcp/playwright.json"

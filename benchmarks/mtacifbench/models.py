@@ -1,14 +1,4 @@
-"""MTACIFBench data models for AgentProbe.
-
-MTACIFBench measures multi-turn agentic-coding *instruction following*: the
-agent works several rounds in one workspace and one conversation, and each
-round is scored against that round's constraint checklist.
-
-The JSONL is expected to be the shape published on the Hugging Face Hub (see
-``benchmarks/mtacifbench/README.md``). Tolerance for looser input lives in
-``scripts/build_mtacifbench_dataset.py``, not here, so a malformed row fails at
-load time rather than mid-run.
-"""
+"""AgentProbe-native Q-I-J models for MTAC-IFBench."""
 
 from __future__ import annotations
 
@@ -16,87 +6,156 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
+from agent_probe.config import JudgeConfig
 from agent_probe.core.models import BaseInference, BaseJudgement, BaseQuestion, Error
 
 DEFAULT_INFER_DOCKER = "alexgshaw/break-filter-js-from-html:20251031"
-# No default image: judge containers are deployment-specific, and baking a
-# private registry path in here makes the benchmark unusable elsewhere.
-# Questions carry judge_docker (the converter always writes it); set
-# MTACIF_JUDGE_IMAGE to override for data that omits it.
-DEFAULT_JUDGE_DOCKER = os.environ.get("MTACIF_JUDGE_IMAGE", "")
+
+
+PASS_CONCLUSION = "[[满足了该要求]]"
+FAIL_CONCLUSION = "[[没有满足该要求]]"
 
 
 class IFConstraint(BaseModel):
-    """One instruction-following constraint for one round.
-
-    ``validation_code`` is the dataset-supplied deterministic checker, stored on
-    the constraint itself. Keeping it here rather than in a parallel array
-    aligned by index removes a whole class of silent misalignment.
-    """
+    """One instruction-following constraint and its optional checker."""
 
     constraint: str
     validation_code: str = ""
     tags: list[str] = Field(default_factory=list)
-    main_id: int | None = None
-    type_id: int | None = None
+
+    @field_validator("constraint")
+    @classmethod
+    def _constraint_must_not_be_empty(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("instruction-following constraint must not be empty")
+        return value
 
 
 class MTACIFRound(BaseModel):
-    """One requirement round.
+    """One ordered contestant round."""
 
-    ``instruction_following_checklist`` is self-contained: constraints may be
-    replaced or reordered between rounds (a later round can forbid what an
-    earlier round required), so rounds are never merged or inherited.
-    """
+    model_config = ConfigDict(populate_by_name=True)
 
     round_id: int
-    prompt: str
+    # The raw dataset spells this "instruction"; the built dataset spells it
+    # "prompt". Accept both so either shape validates through this model.
+    prompt: str = Field(validation_alias=AliasChoices("prompt", "instruction"))
     instruction_following_checklist: list[IFConstraint] = Field(default_factory=list)
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_must_not_be_empty(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("round prompt must not be empty")
+        return value
 
 
 class MTACIFBenchQuestion(BaseQuestion):
-    """One prepared MTACIFBench instance."""
+    """One MTAC-IFBench task in the released dataset shape."""
 
-    task_id: str
-    docker: str = DEFAULT_INFER_DOCKER
-    judge_docker: str = DEFAULT_JUDGE_DOCKER
-    workspace_dir: str = "/workspace"
-    description: str = ""
-    system_prompt: str = ""
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    task_id: int = Field(validation_alias=AliasChoices("task_id", "qid"))
+    repository_policy: str
+    repository_policy_checklist: list[IFConstraint] = Field(default_factory=list)
+    task_category: str = ""
     rounds: list[MTACIFRound]
-    task_description_for_judge: str | None = None
-    categories: list[str] = Field(default_factory=lambda: ["mtacifbench", "agent", "multi_round"])
-    eval_timeout: int = 3600
+    function_checklist: list[str] = Field(default_factory=list)
+
+    docker: str = DEFAULT_INFER_DOCKER
+    judge_docker: str = ""
+    workspace_dir: str = "/workspace"
+    test_mode: Literal["http", "file"] = "http"
+    http_port: int = 5173
+    http_build_timeout: int = 600
     eval_concurrent: int = 5
-    judge_parse_retry_max: int = 3
+    eval_timeout: int = 36000
     validation_code_timeout: int = 60
+    judge_parse_retry_max: int = 3
+
+    @field_validator("task_id", mode="before")
+    @classmethod
+    def _validate_task_id(cls, value: object) -> object:
+        # Rejected explicitly: pydantic would coerce True to task_id 1.
+        if isinstance(value, bool):
+            raise ValueError("MTAC-IFBench task_id must be an integer, not a bool")
+        return value
+
+    @field_validator("repository_policy")
+    @classmethod
+    def _repository_policy_must_not_be_empty(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("MTAC-IFBench repository_policy must not be empty")
+        return value
+
+    @field_validator("function_checklist")
+    @classmethod
+    def _function_checklist_items_must_not_be_empty(cls, value: list[str]) -> list[str]:
+        normalized = [str(item or "").strip() for item in value]
+        if any(not item for item in normalized):
+            raise ValueError("function checklist items must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_round_alignment(self) -> MTACIFBenchQuestion:
+        if not self.rounds:
+            raise ValueError("MTAC-IFBench task must contain at least one round")
+        round_ids = [item.round_id for item in self.rounds]
+        if len(round_ids) != len(set(round_ids)):
+            raise ValueError("MTAC-IFBench round_id values must be unique")
+        return self
 
     def qid(self) -> str:
-        return self.task_id
+        return str(self.task_id)
 
     @property
     def task_description(self) -> str:
-        if self.task_description_for_judge:
-            return self.task_description_for_judge
-        if self.description:
-            return self.description
-        return "\n".join(f"第{item.round_id}轮：{item.prompt}" for item in self.rounds)
+        return "\n".join(
+            f"第{round_item.round_id}轮：{round_item.prompt}" for round_item in self.rounds
+        )
 
     @property
     def category(self) -> str:
-        return self.categories[0] if self.categories else "mtacifbench"
+        return self.task_category or "mtacifbench"
 
     def round_by_id(self, round_id: int) -> MTACIFRound | None:
-        for item in self.rounds:
-            if item.round_id == round_id:
-                return item
+        for round_item in self.rounds:
+            if round_item.round_id == round_id:
+                return round_item
         return None
 
     def checklist_for(self, round_id: int) -> list[IFConstraint]:
-        item = self.round_by_id(round_id)
-        return list(item.instruction_following_checklist) if item else []
+        """Return the round's own constraints, exactly as the dataset states them.
+
+        Repository-policy constraints are *not* merged in here. The dataset
+        repeats every policy constraint it wants scored into the round it
+        applies to, so the round checklist is already the authoritative list;
+        merging would double-count the repeated ones under a different
+        deduplication rule than the dataset's own.
+        """
+        round_item = self.round_by_id(round_id)
+        if round_item is None:
+            return []
+        return list(round_item.instruction_following_checklist)
+
+    def validation_codes_for(self, round_id: int) -> list[str]:
+        return [item.validation_code for item in self.checklist_for(round_id)]
+
+    @property
+    def constraint_count(self) -> int:
+        return sum(len(item.instruction_following_checklist) for item in self.rounds)
 
 
 class RoundRecord(BaseModel):
@@ -107,15 +166,13 @@ class RoundRecord(BaseModel):
     round_id: int
     attempt: int = 0
     prompt: str = ""
-    # Full final reply — the input deterministic validators and the judge score.
     result_response: str = ""
-    # Bounded copy for logs and diagnostics only.
     result_excerpt: str = ""
     material_ref: str = ""
 
 
 class MTACIFBenchInference(BaseInference):
-    """Inference artifacts for one MTACIFBench run."""
+    """Inference artifacts for one MTAC-IFBench run."""
 
     response: str = ""
     workspace_tar_path: Path | None = None
@@ -125,21 +182,21 @@ class MTACIFBenchInference(BaseInference):
 
 
 class IFCheckResult(BaseModel):
-    """Verdict for one constraint."""
+    """Verdict for one instruction-following requirement."""
 
     index: int
     requirement: str
     analysis: str = ""
-    conclusion: str
+    conclusion: Literal["[[满足了该要求]]", "[[没有满足该要求]]"]
     source: Literal["validation_code", "judge"] = "judge"
 
     @property
     def passed(self) -> bool:
-        return self.conclusion == "[[满足了该要求]]"
+        return self.conclusion == PASS_CONCLUSION
 
 
 class IFRoundResult(BaseModel):
-    """Verdict for one round."""
+    """Complete instruction-following judgement for one round."""
 
     round_id: int
     passed: bool = False
@@ -147,13 +204,33 @@ class IFRoundResult(BaseModel):
     summary: str = ""
     symptoms: str = ""
     check_results: list[IFCheckResult] = Field(default_factory=list)
-    # Bounded; the full judge text lives under eval/{qid}/instruction_following/.
     raw_output_excerpt: str = ""
     result_ref: str = ""
 
 
+class FunctionCheckResult(BaseModel):
+    """Verdict for one function-checklist item."""
+
+    id: int | str
+    description: str
+    score: float | None = None
+    reason: str = ""
+    evaluation_error: Error | None = None
+    duration: float = 0.0
+
+    @field_validator("score")
+    @classmethod
+    def _score_must_be_binary_or_missing(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        normalized = float(value)
+        if normalized not in {0.0, 1.0}:
+            raise ValueError("function checklist score must be 0, 1, or null")
+        return normalized
+
+
 class MTACIFBenchJudgement(BaseJudgement):
-    """Instruction-following judgement for one task."""
+    """Instruction-following judgement plus optional function results."""
 
     category: str = "mtacifbench"
     instruction_following_checks: list[IFRoundResult] = Field(default_factory=list)
@@ -161,3 +238,43 @@ class MTACIFBenchJudgement(BaseJudgement):
     total_rounds: int = 0
     round_summaries: list[dict[str, object]] = Field(default_factory=list)
     response: str = ""
+    checks: list[FunctionCheckResult] = Field(default_factory=list)
+    function_score: float = 0.0
+    function_checklist_skipped: bool = True
+    build_success: bool | None = None
+
+    @model_validator(mode="after")
+    def _invalidate_incomplete_function_judgement(self) -> MTACIFBenchJudgement:
+        if self.error is not None or self.function_checklist_skipped:
+            return self
+        if any(item.score is None or item.evaluation_error is not None for item in self.checks):
+            self.error = Error(code=-1, message="function checklist evaluation is incomplete")
+            return self
+        expected_score = sum(float(item.score or 0.0) for item in self.checks) / (
+            len(self.checks) or 1
+        )
+        if abs(self.function_score - expected_score) > 1e-9:
+            self.error = Error(code=-1, message="function checklist score is inconsistent")
+        return self
+
+
+def resolve_judge_image(question: MTACIFBenchQuestion, judge_config: JudgeConfig) -> str:
+    """Pick the image the judge sandbox runs in.
+
+    MTACIF_JUDGE_IMAGE overrides everything for a one-off run, then the
+    question's own ``judge_docker``, then ``docker`` in the judge config, which
+    is where it normally comes from. Raising beats letting an empty string reach
+    the sandbox API, which fails there without naming the cause.
+    """
+    for candidate in (
+        os.environ.get("MTACIF_JUDGE_IMAGE"),
+        question.judge_docker,
+        judge_config.docker,
+    ):
+        image = str(candidate or "").strip()
+        if image:
+            return image
+    raise ValueError(
+        "no judge image: set `docker` in the judge config, or MTACIF_JUDGE_IMAGE, "
+        "or give the question a judge_docker value"
+    )

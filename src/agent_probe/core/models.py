@@ -34,6 +34,7 @@ class LastAssistant(BaseModel):
     stop_reason: Optional[str] = None
     error_message: Optional[str] = None
     content_text: str = ""
+    is_complete_response: bool = False
 
 
 class BaseQuestion(BaseModel):

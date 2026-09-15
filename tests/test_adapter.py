@@ -116,3 +116,31 @@ def test_empty_jsonl(tmp_jsonl):
     data_dir = tmp_jsonl([])
     adapter = LocalJsonlAdapter(data_dir=str(data_dir), question_type=SimpleQuestion)
     assert adapter.list_ids() == []
+
+
+def test_include_ids_filters_and_preserves_requested_order(tmp_jsonl):
+    data_dir = tmp_jsonl(
+        [
+            {"id": "q1", "text": "a"},
+            {"id": "q2", "text": "b"},
+            {"id": "q3", "text": "c"},
+        ]
+    )
+    adapter = LocalJsonlAdapter(
+        data_dir=str(data_dir),
+        question_type=SimpleQuestion,
+        include_ids=["q3", "q1"],
+    )
+    assert adapter.list_ids() == ["q3", "q1"]
+    assert adapter.load("q3").text == "c"
+
+
+@pytest.mark.parametrize("include_ids", [["missing"], ["q1", "q1"]])
+def test_include_ids_rejects_unknown_or_duplicate_ids(tmp_jsonl, include_ids):
+    data_dir = tmp_jsonl([{"id": "q1", "text": "a"}])
+    with pytest.raises(ValueError):
+        LocalJsonlAdapter(
+            data_dir=str(data_dir),
+            question_type=SimpleQuestion,
+            include_ids=include_ids,
+        )
