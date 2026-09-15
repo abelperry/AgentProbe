@@ -173,7 +173,7 @@ repo maps 1:1 into `benchmarks/<bench>/data/`:
 uv pip install huggingface_hub
 
 # pull one benchmark
-python scripts/pull_benchmarks.py --org AbelNexux mtacifbench
+python scripts/pull_benchmarks.py --repo mtacifbench=thu-coai/MTAC-IFBench
 
 # or every benchmark hosted by an org/user
 python scripts/pull_benchmarks.py --org your-org
@@ -184,7 +184,7 @@ python scripts/pull_benchmarks.py --repo swebench=princeton-nlp/SWE-bench_Verifi
 
 | Benchmark | Dataset | Status |
 |---|---|---|
-| `mtacifbench` | [AbelNexux/mtacifbench](https://huggingface.co/datasets/AbelNexux/mtacifbench) | published |
+| `mtacifbench` | [thu-coai/MTAC-IFBench](https://huggingface.co/datasets/thu-coai/MTAC-IFBench) | published |
 | `zbackendbench` | 2 sample tasks tracked in this repo | full set not published |
 | others | — | not published yet |
 
@@ -271,7 +271,7 @@ Variables the shipped configs expect:
 | `SWEBENCH_PRO_IMAGE_REPO` | Registry holding the SWE-bench Pro instance images |
 | `EXTRACT_API_BASE_URL` | Score-extraction endpoint (mrccbench) |
 | `SANDBOX_KEY` | OpenSandbox server API key |
-| `ZHIPU_API_KEY`, `GATEWAY_API_KEY`, `GLM_API_KEY`, `DEEPSEEK_API_KEY` | Model credentials |
+| `ZHIPU_API_KEY`, `GATEWAY_API_KEY`, `GLM_API_KEY` | Model credentials |
 
 Keep these in a launcher script — `run.sh` and `run-*.sh` are git-ignored for
 exactly this reason.
