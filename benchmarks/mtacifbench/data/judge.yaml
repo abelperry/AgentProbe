@@ -11,8 +11,5 @@ model:
 agent:
   type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
   version: "2.1.14"
-  # One judge container per round: an online `npm i -g` at that rate hits
-  # ECONNRESET on this host, so install the native binary from the offline
-  # package instead (the judge image has no npm to fall back on either).
   offline: true
   offline_package_dir: ${OFFLINE_PACKAGE_DIR}
