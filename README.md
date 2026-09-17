@@ -175,7 +175,7 @@ repo maps 1:1 into `benchmarks/<bench>/data/`:
 uv pip install huggingface_hub
 
 # pull one benchmark
-python scripts/pull_benchmarks.py --repo mtacifbench=thu-coai/MTAC-IFBench
+python scripts/pull_benchmarks.py mtacifbench
 
 # or every benchmark hosted by an org/user
 python scripts/pull_benchmarks.py --org your-org

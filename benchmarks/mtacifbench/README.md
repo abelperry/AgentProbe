@@ -99,22 +99,20 @@ uv sync
 ./scripts/init.sh && source .agentprobe-env
 
 uv pip install huggingface_hub
-python scripts/pull_benchmarks.py --repo mtacifbench=thu-coai/MTAC-IFBench
+python scripts/pull_benchmarks.py mtacifbench            # 100 tasks
+python scripts/pull_benchmarks.py mtacifbench --split lite   # or the 20-task subset
 ```
 
-**2. Place the data**
+That leaves a runnable `benchmarks/mtacifbench/data/`: the chosen split placed as
+`questions.jsonl`, which is what the adapter reads, alongside the two judge
+configs tracked in this repo. They are byte-compatible with the dataset's own
+`eval_config/`, so a copy from either behaves the same.
 
-The adapter reads `benchmarks/mtacifbench/data/questions.jsonl`:
+`judge.yaml` scores instruction-following only; point the dataset's
+`judge_config_path` at `judge_if_function.yaml` to also build the final project
+and check its function checklist.
 
-```bash
-cd benchmarks/mtacifbench/data
-cp data/full/questions.jsonl questions.jsonl    # or data/lite/questions.jsonl
-cp eval_config/judge.yaml .                     # or judge_if_function.yaml
-```
-
-`judge.yaml` scores instruction-following only, while `judge_if_function.yaml` also builds the final project and checks the function checklist.
-
-**3. Configure the agent**
+**2. Configure the agent**
 
 In `examples/exp-mtacifbench.yaml`, `models:` is the LLM to be evaluated and `agents:` is the harness driving it.
 
@@ -140,7 +138,7 @@ agents:
 
 Every agent listed runs against every model listed, so you can uncomment `opencode` to compare one model across both harnesses.
 
-**4. Start evaluation**
+**3. Start evaluation**
 
 ```bash
 export GATEWAY_BASE_URL=... GATEWAY_API_KEY=...
