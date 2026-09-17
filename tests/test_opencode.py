@@ -1,10 +1,10 @@
 """OpenCodeAgent behaviour that a benchmark depends on.
 
-The pinned properties are the ones whose breakage is silent: a system prompt
-that reaches the model through the wrong channel still runs, a second round
-that quietly starts a fresh conversation still produces output, and a truncated
-turn still looks like a finished one. All three would show up as a worse model,
-not as a broken harness.
+The pinned properties are the ones whose breakage is silent: a second round that
+quietly starts a fresh conversation still produces output, a truncated turn still
+looks like a finished one, and an agent that writes into the workspace still
+finishes the task. All three would show up as a worse model rather than as a
+broken harness.
 """
 
 from __future__ import annotations
@@ -67,37 +67,36 @@ def _agent(**params: Any) -> OpenCodeAgent:
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_travels_out_of_band_not_through_the_workspace() -> None:
-    """The workspace is the artifact under evaluation; instructions stay out of it."""
-    spec = SandboxSpec(
-        image="img", workspace="/workspace", append_system_prompt="每轮回复以喵开头"
-    )
+async def test_the_agent_does_not_touch_the_workspace_itself() -> None:
+    """MTAC-IFBench defines repository_policy as a file the *benchmark* writes.
+
+    The agent's job is only to install and run OpenCode. If it also wrote into
+    the workspace, the benchmark's own policy file and the agent's idea of one
+    could disagree, and the workspace under evaluation would depend on which
+    ran last.
+    """
+    spec = SandboxSpec(image="img", workspace="/workspace")
     sb = _RecordingSandbox(spec)
     agent = _agent()
 
     await agent.install(sb)
     await agent.run_prompt(sb, "round 0")
 
-    config = json.loads(sb.files["/root/.config/opencode/opencode.json"])
-    assert config["agent"]["agentprobe"]["prompt"] == "每轮回复以喵开头"
-    run_cmd = next(cmd for cmd in sb.commands if "opencode run" in cmd)
-    assert "--agent agentprobe" in run_cmd
-    # Nothing may be written under the workspace -- an AGENTS.md there would
-    # end up inside the snapshot the constraints are scored against.
+    assert sb.files, "the agent should have written its own config at least"
+    # Everything it writes lives outside the workspace: its config, the prompt
+    # handed to the CLI, the stream shim.
     assert not [path for path in sb.files if path.startswith("/workspace")]
 
 
 @pytest.mark.asyncio
-async def test_no_benchmark_agent_when_there_is_no_system_prompt() -> None:
+async def test_a_named_agent_is_only_passed_when_configured() -> None:
     sb = _RecordingSandbox(SandboxSpec(image="img", workspace="/workspace"))
-    agent = _agent()
-
-    await agent.install(sb)
-    await agent.run_prompt(sb, "go")
-
-    config = json.loads(sb.files["/root/.config/opencode/opencode.json"])
-    assert "agentprobe" not in config["agent"]
+    await _agent().run_prompt(sb, "go")
     assert "--agent" not in next(cmd for cmd in sb.commands if "opencode run" in cmd)
+
+    sb2 = _RecordingSandbox(SandboxSpec(image="img", workspace="/workspace"))
+    await _agent(agent_name="build").run_prompt(sb2, "go")
+    assert "--agent build" in next(cmd for cmd in sb2.commands if "opencode run" in cmd)
 
 
 @pytest.mark.asyncio
@@ -126,7 +125,7 @@ async def test_a_truncated_turn_is_not_reported_as_complete() -> None:
 
     assert last is not None
     assert last.is_complete_response is False
-    assert "complete final response" in (last.error_message or "")
+    assert "complete final assistant response" in (last.error_message or "")
 
 
 @pytest.mark.asyncio
@@ -144,25 +143,26 @@ async def test_a_finished_turn_is_reported_as_complete() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gateway_proxy_is_off_by_default() -> None:
-    """The proxy works around one gateway; it must not be the default route."""
+async def test_the_stream_shim_is_on_by_default() -> None:
+    """OpenCode's providers ask for SSE; a gateway answering with one JSON body hangs them."""
     sb = _RecordingSandbox(SandboxSpec(image="img", workspace="/workspace"))
     await _agent().install(sb)
+
+    config = json.loads(sb.files["/root/.config/opencode/opencode.json"])
+    assert config["provider"]["agentprobe"]["options"]["baseURL"] == "http://127.0.0.1:18080/v1"
+    assert any("gateway_proxy" in cmd for cmd in sb.commands)
+
+
+@pytest.mark.asyncio
+async def test_the_stream_shim_can_be_turned_off() -> None:
+    """It converts the call to non-streaming, which is a cost worth avoiding."""
+    sb = _RecordingSandbox(SandboxSpec(image="img", workspace="/workspace"))
+    await _agent(gateway_proxy=False).install(sb)
 
     config = json.loads(sb.files["/root/.config/opencode/opencode.json"])
     assert config["provider"]["agentprobe"]["options"]["baseURL"] == "https://example.test/v1"
     assert not [cmd for cmd in sb.commands if "gateway_proxy" in cmd]
     assert sb.env_vars["OPENAI_BASE_URL"] == "https://example.test/v1"
-
-
-@pytest.mark.asyncio
-async def test_gateway_proxy_reroutes_when_enabled() -> None:
-    sb = _RecordingSandbox(SandboxSpec(image="img", workspace="/workspace"))
-    await _agent(gateway_proxy=True).install(sb)
-
-    config = json.loads(sb.files["/root/.config/opencode/opencode.json"])
-    assert config["provider"]["agentprobe"]["options"]["baseURL"] == "http://127.0.0.1:18080/v1"
-    assert any("gateway_proxy" in cmd for cmd in sb.commands)
 
 
 def test_version_ignores_the_claude_code_default() -> None:

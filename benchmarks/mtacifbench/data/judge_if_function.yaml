@@ -1,12 +1,14 @@
 # Instruction following *and* functional evaluation.
 #
 # Point a dataset's judge_config_path here instead of judge.yaml to turn the
-# functional pass on. It costs a build, an HTTP server and a browser-driving
-# judge per task, which is why it is not the default -- see
-# benchmarks/mtacifbench/function_eval.py.
+# functional pass on: it builds the project, serves it and drives a browser,
+# which costs minutes per task. Kept byte-compatible with the copy shipped in
+# the dataset's eval_config/, so copying either one behaves the same.
+
+docker: "dayong657/playwright-mcp-base:0.1.0"
 
 model:
-  base_url: "${GATEWAY_BASE_URL}/"
+  base_url: "${GATEWAY_BASE_URL}"
   api_key: "${GATEWAY_API_KEY}"
   model_name: "deepseek-v4-pro"
   format: "anthropic"
@@ -15,34 +17,23 @@ model:
 
 agent:
   type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
-  version: "2.1.199"
-  # One judge container per round: an online `npm i -g` at that rate hits
-  # ECONNRESET on this host, so install the native binary from the offline
-  # package instead (the judge image has no npm to fall back on either).
+  version: "2.1.14"
   offline: true
   offline_package_dir: ${OFFLINE_PACKAGE_DIR}
 
 function_checklist_eval_enabled: true
-
-# Reading a rendered page is a different job from reading a transcript, so the
-# functional pass gets its own model. Omit either block to fall back to the
-# judge above.
 function_model:
-  base_url: "${GATEWAY_BASE_URL}/"
+  base_url: "${GATEWAY_BASE_URL}"
   api_key: "${GATEWAY_API_KEY}"
   model_name: "claude-sonnet-4-6-thinking"
   format: "anthropic"
   timeout: 3600
-  max_tokens: 64000
+  max_tokens: 80000
   thinking: "high"
   max_thinking_tokens: 16000
-
 function_agent:
   type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
-  version: "2.1.199"
+  version: "2.1.14"
   offline: true
   offline_package_dir: ${OFFLINE_PACKAGE_DIR}
-  # The checks are things like "hovering a status light shows a tooltip", so
-  # the judge needs a real browser. This is why judge_docker must be the
-  # Playwright image (dayong657/playwright-mcp-base) rather than the plain one.
   mcp_host_path: "config/mcp/playwright.json"

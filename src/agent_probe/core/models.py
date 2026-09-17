@@ -19,10 +19,6 @@ class ErrorCode(IntEnum):
     AGENT_INSTALL = -3
     AGENT_EXIT_NONZERO = -4
     AGENT_STOP_ERROR = -5
-    # The agent stopped mid-turn: hit its output cap, or ended while still
-    # holding an unanswered tool call. The workspace is half-finished, so
-    # scoring it would measure the truncation, not the model.
-    AGENT_INCOMPLETE_RESPONSE = -6
 
 
 class Error(BaseModel):

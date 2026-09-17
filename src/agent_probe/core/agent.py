@@ -21,11 +21,10 @@ class BaseAgent(ABC):
     """
 
     #: Files this CLI reads as standing project instructions, most preferred
-    #: first. Only consulted by benchmarks that have to write instructions into
-    #: the workspace; agents that accept them out of band (Claude Code's
-    #: ``--append-system-prompt``, OpenCode's per-agent ``prompt``) should be
-    #: driven through that channel instead, so the workspace stays a clean
-    #: record of what the model built.
+    #: first. MTAC-IFBench's ``repository_policy`` is defined as the content of
+    #: such a file, so it is written into the workspace rather than passed out
+    #: of band -- the agent is meant to be able to read it, and constraints in
+    #: the data refer to it.
     project_instruction_filenames: tuple[str, ...] = ("CLAUDE.md",)
 
     def __init__(

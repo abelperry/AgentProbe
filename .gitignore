@@ -49,6 +49,10 @@ uv.lock
 # Each level is re-excluded before whitelisting, because git will not descend
 # into an ignored directory to find a negated file inside it.
 data/
+!benchmarks/mtacifbench/data/
+benchmarks/mtacifbench/data/*
+!benchmarks/mtacifbench/data/judge.yaml
+!benchmarks/mtacifbench/data/judge_if_function.yaml
 !benchmarks/zbackendbench/data/
 benchmarks/zbackendbench/data/*
 !benchmarks/zbackendbench/data/judge.yaml

@@ -1,26 +1,19 @@
 """Functional evaluation: build the workspace, serve it, and inspect it in a browser.
 
-This is the other half of MTACIFBench and it answers a different question from
-the instruction-following half. Instruction following asks whether the agent
-obeyed its constraints; this asks whether the thing it built actually works --
-"hovering a status light shows a tooltip" can only be settled by rendering the
-page and moving a mouse over it.
+The other half of MTAC-IFBench, answering a different question from instruction
+following. Instruction following asks whether the agent obeyed its constraints;
+this asks whether what it built works -- "hovering a status light shows a
+tooltip" can only be settled by rendering the page and moving a mouse over it.
 
 That costs a build, an HTTP server and a browser-driving judge per task, which
-is why ``JudgeConfig.function_checklist_eval_enabled`` defaults to False. When
-it is off, every checklist item is recorded with ``score=None`` and a skip
-reason rather than 0 -- an unrun check is a coverage fact, not a failure.
-
-Verdicts are binary by construction (see ``FunctionCheckResult``). A check that
-could not be run at all -- build failed, no HTTP entry point, judge crashed --
-also scores ``None``, so a broken environment can never read as a half-working
-product.
+is why ``JudgeConfig.function_checklist_eval_enabled`` defaults to False. When it
+is off, every checklist item is recorded with ``score=None`` and a skip reason
+rather than 0 -- an unrun check is a coverage fact, not a failure.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import shlex
 import shutil
@@ -43,11 +36,12 @@ from benchmarks.mtacifbench.function_prompts import (
     FUNCTION_EVALUATION_PROMPT,
 )
 from benchmarks.mtacifbench.models import (
-    FunctionChecklistItem,
     FunctionCheckResult,
     MTACIFBenchInference,
     MTACIFBenchQuestion,
+    resolve_judge_image,
 )
+from benchmarks.mtacifbench.validation import collect_judge_candidates
 
 if TYPE_CHECKING:
     from agent_probe.core.executor import EvalContext
@@ -56,7 +50,6 @@ if TYPE_CHECKING:
 
 CONTAINER_WORKSPACE = "/workspace"
 CONTAINER_JUDGE_WORKDIR = "/tmp"
-FUNCTION_EVAL_SCHEMA_VERSION = 1
 FUNCTION_CHECKLIST_SKIP_REASON = (
     "Skipped: function_checklist evaluation is disabled for MTACIFBench."
 )
@@ -89,13 +82,12 @@ class FunctionBuildResult:
     is_ssr: bool = False
     error_message: str = ""
     build_log: str = ""
-    input_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
 class FunctionEvaluationOutcome:
     checks: list[FunctionCheckResult]
-    weighted_score: float
+    function_score: float
     function_checklist_skipped: bool
     build_success: bool | None
 
@@ -105,17 +97,16 @@ def skipped_function_evaluation(
 ) -> FunctionEvaluationOutcome:
     checks = [
         FunctionCheckResult(
-            checklist_id=item.checklist_id,
-            description=item.description,
-            weight=item.weight,
+            id=index,
+            description=item,
             score=None,
             reason=FUNCTION_CHECKLIST_SKIP_REASON,
         )
-        for item in question.function_checklist
+        for index, item in enumerate(question.function_checklist)
     ]
     return FunctionEvaluationOutcome(
         checks=checks,
-        weighted_score=0.0,
+        function_score=0.0,
         function_checklist_skipped=True,
         build_success=None,
     )
@@ -134,7 +125,7 @@ async def evaluate_function_checklist(
     if not checklist:
         return FunctionEvaluationOutcome(
             checks=[],
-            weighted_score=0.0,
+            function_score=0.0,
             function_checklist_skipped=False,
             build_success=True,
         )
@@ -143,6 +134,11 @@ async def evaluate_function_checklist(
     runtime_error = _validate_function_runtime(function_model, function_agent)
     if runtime_error:
         return _incomplete_outcome(checklist, runtime_error)
+
+    try:
+        judge_image = resolve_judge_image(question, judge_config)
+    except ValueError as exc:
+        return _incomplete_outcome(checklist, str(exc))
 
     workspace_archive = inference_result.workspace_tar_path
     if workspace_archive is None or not workspace_archive.is_file():
@@ -162,11 +158,6 @@ async def evaluate_function_checklist(
             f"extract workspace archive failed: {exc}",
         )
 
-    # One digest of the exact bytes being evaluated, threaded through both
-    # caches: build outputs and per-check verdicts are only reusable while the
-    # workspace they were derived from is unchanged.
-    workspace_fingerprint = await asyncio.to_thread(_file_sha256, workspace_archive)
-
     actual_workspace = _strip_single_wrapper(workspace_dir)
     project_info = detect_project(actual_workspace)
     eval_mode = question.test_mode
@@ -175,11 +166,11 @@ async def evaluate_function_checklist(
     if eval_mode == "http" and needs_build:
         build_result = await _build_workspace(
             question=question,
-            workspace_fingerprint=workspace_fingerprint,
             ctx=ctx,
             function_dir=function_dir,
             workspace_dir=actual_workspace,
             project_info=project_info,
+            judge_image=judge_image,
         )
         if not build_result.success:
             reason = f"Build failed: {build_result.error_message or 'unknown error'}"
@@ -202,7 +193,6 @@ async def evaluate_function_checklist(
         *(
             _evaluate_one(
                 question=question,
-                workspace_fingerprint=workspace_fingerprint,
                 item=item,
                 item_index=index,
                 ctx=ctx,
@@ -213,15 +203,15 @@ async def evaluate_function_checklist(
                 function_model=function_model,
                 function_agent=function_agent,
                 semaphore=semaphore,
+                judge_image=judge_image,
             )
             for index, item in enumerate(checklist)
         )
     )
-    total_weight = sum(item.weight for item in checks) or 1.0
-    weighted_score = sum(float(item.score or 0.0) * item.weight for item in checks) / total_weight
+    function_score = sum(float(item.score or 0.0) for item in checks) / len(checks)
     return FunctionEvaluationOutcome(
         checks=checks,
-        weighted_score=weighted_score,
+        function_score=function_score,
         function_checklist_skipped=False,
         build_success=True,
     )
@@ -252,44 +242,42 @@ def _validate_function_runtime(
 
 
 def _incomplete_outcome(
-    checklist: list[FunctionChecklistItem],
+    checklist: list[str],
     reason: str,
 ) -> FunctionEvaluationOutcome:
     error = Error(code=-1, message=reason[:2000])
     return FunctionEvaluationOutcome(
         checks=[
             FunctionCheckResult(
-                checklist_id=item.checklist_id,
-                description=item.description,
-                weight=item.weight,
+                id=index,
+                description=item,
                 score=None,
                 reason=reason,
                 evaluation_error=error,
             )
-            for item in checklist
+            for index, item in enumerate(checklist)
         ],
-        weighted_score=0.0,
+        function_score=0.0,
         function_checklist_skipped=False,
         build_success=None,
     )
 
 
 def _failed_build_outcome(
-    checklist: list[FunctionChecklistItem],
+    checklist: list[str],
     reason: str,
 ) -> FunctionEvaluationOutcome:
     return FunctionEvaluationOutcome(
         checks=[
             FunctionCheckResult(
-                checklist_id=item.checklist_id,
-                description=item.description,
-                weight=item.weight,
+                id=index,
+                description=item,
                 score=0.0,
                 reason=reason,
             )
-            for item in checklist
+            for index, item in enumerate(checklist)
         ],
-        weighted_score=0.0,
+        function_score=0.0,
         function_checklist_skipped=False,
         build_success=False,
     )
@@ -374,28 +362,13 @@ def detect_project(project_dir: Path) -> ProjectInfo:
 async def _build_workspace(
     *,
     question: MTACIFBenchQuestion,
-    workspace_fingerprint: str,
     ctx: EvalContext,
     function_dir: Path,
     workspace_dir: Path,
     project_info: ProjectInfo,
+    judge_image: str,
 ) -> FunctionBuildResult:
     build_dir = function_dir / "build_workspace"
-    manifest_path = function_dir / "build_result.json"
-    input_fingerprint = _hash_payload(
-        {
-            "schema_version": FUNCTION_EVAL_SCHEMA_VERSION,
-            "workspace": workspace_fingerprint,
-            "project_type": project_info.project_type,
-            "project_relative": str(project_info.project_dir.relative_to(workspace_dir)),
-            "judge_docker": question.judge_docker,
-            "http_build_timeout": question.http_build_timeout,
-        }
-    )
-    cached = _load_build_cache(manifest_path, build_dir, input_fingerprint)
-    if cached is not None:
-        logger.info("[{}] reusing cached function-checklist build", question.qid())
-        return cached
 
     if project_info.project_type == ProjectType.HTML:
         _replace_directory_copy(workspace_dir, build_dir)
@@ -405,9 +378,7 @@ async def _build_workspace(
             artifact_dir=build_dir if entry_file is not None else None,
             entry_file=entry_file,
             error_message="No HTML entry found" if entry_file is None else "",
-            input_fingerprint=input_fingerprint,
         )
-        _write_build_cache(manifest_path, result)
         return result
 
     export_tar = function_dir / ".build_workspace.tar.gz"
@@ -505,7 +476,7 @@ async def _build_workspace(
         )
 
     spec = SandboxSpec(
-        image=question.judge_docker,
+        image=judge_image,
         sandbox_config=ctx.sandbox_config,
         timeout_sec=max(120, question.http_build_timeout + 120),
         on_setup=setup,
@@ -518,9 +489,7 @@ async def _build_workspace(
             success=False,
             error_message=str(holder["error"] or "Build artifacts were not exported"),
             build_log=str(holder["log"]),
-            input_fingerprint=input_fingerprint,
         )
-        _write_build_cache(manifest_path, result)
         return result
 
     _replace_directory_from_archive(export_tar, build_dir)
@@ -532,17 +501,14 @@ async def _build_workspace(
         project_relative=relative_project if holder["ssr"] else Path("."),
         is_ssr=bool(holder["ssr"]),
         build_log=str(holder["log"]),
-        input_fingerprint=input_fingerprint,
     )
-    _write_build_cache(manifest_path, result)
     return result
 
 
 async def _evaluate_one(
     *,
     question: MTACIFBenchQuestion,
-    workspace_fingerprint: str,
-    item: FunctionChecklistItem,
+    item: str,
     item_index: int,
     ctx: EvalContext,
     function_dir: Path,
@@ -552,37 +518,10 @@ async def _evaluate_one(
     function_model: ModelConfig,
     function_agent: AgentConfig,
     semaphore: asyncio.Semaphore,
+    judge_image: str,
 ) -> FunctionCheckResult:
     artifact_dir = function_dir / "checks" / f"check_{item_index}"
     result_path = artifact_dir / "result.json"
-    mcp_path = Path(function_agent.mcp_host_path)
-    input_fingerprint = _hash_payload(
-        {
-            "schema_version": FUNCTION_EVAL_SCHEMA_VERSION,
-            "workspace": workspace_fingerprint,
-            "check": item.model_dump(mode="json"),
-            "task_description": question.task_description,
-            "eval_mode": eval_mode,
-            "http_port": question.http_port,
-            "build_fingerprint": build_result.input_fingerprint if build_result else "",
-            "model": function_model.model_dump(mode="json", exclude={"api_key"}),
-            "agent": function_agent.model_dump(mode="json"),
-            "mcp_sha256": _file_sha256(mcp_path),
-            "prompt": (
-                FUNCTION_EVALUATION_HTTP_PROMPT
-                if eval_mode == "http"
-                else FUNCTION_EVALUATION_PROMPT
-            ),
-        }
-    )
-    cached = _load_check_cache(result_path, item, input_fingerprint)
-    if cached is not None:
-        logger.info(
-            "[{} check:{}] reusing cached function judgement",
-            question.qid(),
-            item.checklist_id,
-        )
-        return cached
 
     if artifact_dir.exists():
         shutil.rmtree(artifact_dir)
@@ -614,9 +553,8 @@ async def _evaluate_one(
     try:
         async with semaphore:
             try_dir = artifact_dir / "run"
-            judge_timeout = min(question.eval_timeout, function_model.timeout)
             spec = SandboxSpec(
-                image=question.judge_docker,
+                image=judge_image,
                 sandbox_config=ctx.sandbox_config,
                 prompt=prompt,
                 agent_config=function_agent,
@@ -625,21 +563,17 @@ async def _evaluate_one(
                 env_vars=dict(function_agent.envs),
                 workspace=CONTAINER_JUDGE_WORKDIR,
                 timeout_sec=question.eval_timeout,
-                agent_timeout_sec=judge_timeout,
-                require_complete_response=True,
                 on_setup=setup,
             )
             sandbox_result = await Sandbox(spec).run()
         score, raw_output, failure = _parse_function_result(sandbox_result, try_dir)
         check_result = FunctionCheckResult(
-            checklist_id=item.checklist_id,
-            description=item.description,
-            weight=item.weight,
+            id=item_index,
+            description=item,
             score=score,
             reason=raw_output or failure or "Not evaluated",
             evaluation_error=(Error(code=-1, message=failure) if failure else None),
             duration=time.monotonic() - start,
-            input_fingerprint=input_fingerprint,
         )
         if raw_output:
             (artifact_dir / "raw_output.txt").write_text(raw_output, encoding="utf-8")
@@ -648,20 +582,21 @@ async def _evaluate_one(
         logger.warning(
             "[{} check:{}] {}",
             question.qid(),
-            item.checklist_id,
+            item_index,
             message,
         )
         check_result = FunctionCheckResult(
-            checklist_id=item.checklist_id,
-            description=item.description,
-            weight=item.weight,
+            id=item_index,
+            description=item,
             score=None,
             reason=message,
             evaluation_error=Error(code=-1, message=message),
             duration=time.monotonic() - start,
-            input_fingerprint=input_fingerprint,
         )
-    _write_check_cache(result_path, input_fingerprint, check_result)
+    result_path.write_text(
+        json.dumps(check_result.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return check_result
 
 
@@ -675,10 +610,8 @@ def _parse_function_result(
         else ""
     )
     command_output = sandbox_result.last.stdout if sandbox_result.last is not None else ""
-    # Same order of preference as the instruction-following judge: the parsed
-    # final assistant message first, raw stdout only as a fallback.
-    candidates = [text for text in (primary.strip(), command_output.strip()) if text]
-    raw_output = candidates[0] if candidates else ""
+    candidates = collect_judge_candidates(primary, command_output, output_dir / "traces")
+    raw_output = candidates[0] if candidates else primary or command_output
     if sandbox_result.error:
         return None, raw_output, sandbox_result.error.message[:2000]
     for candidate in candidates:
@@ -715,7 +648,7 @@ def _parse_function_verdict(text: str) -> float | None:
 
 def _function_prompt(
     question: MTACIFBenchQuestion,
-    item: FunctionChecklistItem,
+    item: str,
     eval_mode: str,
 ) -> str:
     if eval_mode == "http":
@@ -723,12 +656,12 @@ def _function_prompt(
             task_description=question.task_description,
             workspace_path=CONTAINER_WORKSPACE,
             project_url=f"http://localhost:{question.http_port}",
-            checklist_item_description=item.description,
+            checklist_item_description=item,
         )
     return FUNCTION_EVALUATION_PROMPT.format(
         task_description=question.task_description,
         workspace_path=CONTAINER_WORKSPACE,
-        checklist_item_description=item.description,
+        checklist_item_description=item,
     )
 
 
@@ -887,112 +820,3 @@ def _replace_directory_from_archive(archive_path: Path, destination: Path) -> No
 def _strip_single_wrapper(directory: Path) -> Path:
     entries = list(directory.iterdir())
     return entries[0] if len(entries) == 1 and entries[0].is_dir() else directory
-
-
-def _hash_payload(payload: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _load_build_cache(
-    manifest_path: Path,
-    build_dir: Path,
-    input_fingerprint: str,
-) -> FunctionBuildResult | None:
-    if not manifest_path.is_file():
-        return None
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if payload.get("input_fingerprint") != input_fingerprint:
-            return None
-        if not payload.get("success") or not build_dir.is_dir():
-            return None
-        return FunctionBuildResult(
-            success=True,
-            artifact_dir=build_dir,
-            entry_file=(Path(payload["entry_file"]) if payload.get("entry_file") else None),
-            project_relative=Path(payload.get("project_relative") or "."),
-            is_ssr=bool(payload.get("is_ssr")),
-            build_log=str(payload.get("build_log") or ""),
-            input_fingerprint=input_fingerprint,
-        )
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return None
-
-
-def _write_build_cache(path: Path, result: FunctionBuildResult) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": FUNCTION_EVAL_SCHEMA_VERSION,
-                "input_fingerprint": result.input_fingerprint,
-                "success": result.success,
-                "entry_file": str(result.entry_file) if result.entry_file else None,
-                "project_relative": str(result.project_relative),
-                "is_ssr": result.is_ssr,
-                "error_message": result.error_message,
-                "build_log": result.build_log,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-
-def _load_check_cache(
-    path: Path,
-    item: FunctionChecklistItem,
-    input_fingerprint: str,
-) -> FunctionCheckResult | None:
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if (
-            payload.get("schema_version") != FUNCTION_EVAL_SCHEMA_VERSION
-            or payload.get("input_fingerprint") != input_fingerprint
-        ):
-            return None
-        result = FunctionCheckResult.model_validate(payload.get("result"))
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return None
-    if (
-        result.id != item.checklist_id
-        or result.description != item.description
-        or result.weight != item.weight
-        or result.score is None
-        or result.evaluation_error is not None
-    ):
-        return None
-    return result.model_copy(update={"cached": True})
-
-
-def _write_check_cache(
-    path: Path,
-    input_fingerprint: str,
-    result: FunctionCheckResult,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": FUNCTION_EVAL_SCHEMA_VERSION,
-                "input_fingerprint": input_fingerprint,
-                "result": result.model_dump(mode="json"),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )

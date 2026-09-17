@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 import uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -41,9 +43,25 @@ AgentFactory = Callable[["AgentConfig", "ModelConfig"], "BaseAgent"]
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int from the environment, falling back on bad input."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("{}={!r} is not an integer; using {}", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("{}={} must be positive; using {}", name, value, default)
+        return default
+    return value
+
+
 class ResourceSpec(BaseModel):
-    cpus: int = 4
-    memory_mb: int = 4096
+    cpus: int = Field(default_factory=lambda: _env_int("AGENTPROBE_SANDBOX_CPUS", 4))
+    memory_mb: int = Field(default_factory=lambda: _env_int("AGENTPROBE_SANDBOX_MEMORY_MB", 4096))
     storage_mb: int = 10240
     gpus: int = 0
 
@@ -60,7 +78,7 @@ class SandboxSpec(BaseModel):
     # Per-prompt cap handed to the agent CLI. ``timeout_sec`` bounds the whole
     # sandbox; a multi-round task needs each round bounded separately, or one
     # stuck round eats the budget of every round after it.
-    agent_timeout_sec: Optional[int] = None
+    agent_timeout_sec: int | None = None
     workspace: Optional[str] = None
     volumes: list[Volume] = Field(default_factory=list)
 
@@ -74,10 +92,6 @@ class SandboxSpec(BaseModel):
     # --append-system-prompt). Used for per-question system constraints and for
     # judge anti-injection instructions.
     append_system_prompt: str = ""
-    # Fail the round when the agent stopped mid-turn (output cap, or ended
-    # holding an unanswered tool call). Off by default: benchmarks that score a
-    # partial workspace on purpose must be able to keep doing so.
-    require_complete_response: bool = False
 
     agent_config: Optional[AgentConfig] = None
     model_cfg: Optional[ModelConfig] = None
@@ -129,6 +143,7 @@ class Sandbox:
             domain=spec.sandbox_config.host,
             api_key=spec.sandbox_config.api_key or None,
             request_timeout=timedelta(seconds=spec.sandbox_config.request_timeout),
+            use_server_proxy=spec.sandbox_config.use_server_proxy,
         )
         self.env_vars = spec.env_vars
         self.session_id: str = str(uuid.uuid4())
@@ -292,14 +307,6 @@ class Sandbox:
                 code=ErrorCode.AGENT_STOP_ERROR,
                 message=last_assistant.error_message or "agent stopped with error",
             )
-        if self.spec.require_complete_response and not complete:
-            stop_reason = last_assistant.stop_reason if last_assistant else None
-            suffix = f" (stop_reason={stop_reason})" if stop_reason else ""
-            return Error(
-                code=ErrorCode.AGENT_INCOMPLETE_RESPONSE,
-                message=(last_assistant.error_message if last_assistant else None)
-                or f"agent stopped without a complete final response{suffix}",
-            )
         return None
 
     # ------------------------------------------------------------------
@@ -372,26 +379,50 @@ class Sandbox:
             batch = files_to_write[i : i + batch_size]
             await self.write_files(batch)
 
-    async def download_directory(self, remote_dir: str, local_tar_path: Path) -> None:
+    async def download_directory(
+        self,
+        remote_dir: str,
+        local_tar_path: Path,
+        exclude_dirs: tuple[str, ...] = (),
+    ) -> None:
         """Stream-download a sandbox directory as tar.gz to a local file."""
-        check = await self.exec_cmd(f"test -d {remote_dir}")
+        quoted_remote_dir = shlex.quote(remote_dir)
+        check = await self.exec_cmd(f"test -d {quoted_remote_dir}")
         if check.exit_code != 0:
             raise FileNotFoundError(f"Remote directory not found: {remote_dir}")
 
         local_tar_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_tar = "/tmp/_export.tar.gz"
-        tar_result = await self.exec_cmd(f"tar czf {tmp_tar} -C {remote_dir} .")
+        exclude_args = " ".join(
+            f"--exclude={shlex.quote(name)} --exclude={shlex.quote(f'*/{name}')}"
+            for name in exclude_dirs
+        )
+        tar_result = await self.exec_cmd(
+            " ".join(
+                part
+                for part in (
+                    "tar czf",
+                    shlex.quote(tmp_tar),
+                    exclude_args,
+                    "-C",
+                    quoted_remote_dir,
+                    ".",
+                )
+                if part
+            )
+        )
         if tar_result.exit_code != 0:
             raise RuntimeError(
                 f"tar failed for {remote_dir}: {tar_result.stderr.strip()[-500:]}"
             )
 
-        aiter = await self.os_sandbox.files.read_bytes_stream(tmp_tar)
-        async with aiofiles.open(local_tar_path, "wb") as f:
-            async for chunk in aiter:
-                await f.write(chunk)
-
-        await self.exec_cmd(f"rm -f {tmp_tar}")
+        try:
+            aiter = await self.os_sandbox.files.read_bytes_stream(tmp_tar)
+            async with aiofiles.open(local_tar_path, "wb") as f:
+                async for chunk in aiter:
+                    await f.write(chunk)
+        finally:
+            await self.exec_cmd(f"rm -f {shlex.quote(tmp_tar)}")
 
     async def search_files(self, path: str, pattern: str) -> list[str]:
         """Search sandbox for files matching a glob pattern."""
