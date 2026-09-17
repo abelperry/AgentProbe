@@ -27,6 +27,21 @@ def _setup_logging(level: str) -> None:
     )
 
 
+def _put_project_root_first(root: str) -> None:
+    """Make ``root`` the first entry on ``sys.path``, moving it if already present.
+
+    Not "insert if absent": an editable install already leaves the project root
+    on ``sys.path``, but *behind* site-packages. A dependency shipping a
+    top-level package of the same name then wins -- pysbd ships one called
+    ``benchmarks``, which turns every benchmark import into "No module named
+    'benchmarks.mtacifbench'". The old guard skipped the insert in exactly the
+    case that needed it, because the path was present, just in the wrong place.
+    """
+    while root in sys.path:
+        sys.path.remove(root)
+    sys.path.insert(0, root)
+
+
 @app.command()
 def run(
     config: Path = typer.Option(..., "--config", "-c", help="Path to experiment YAML"),
@@ -39,10 +54,7 @@ def run(
         logger.error("Config file {} not found", config)
         raise typer.Exit(1)
 
-    # Ensure CWD is on sys.path so that benchmarks.* can be imported.
-    cwd = str(Path.cwd())
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
+    _put_project_root_first(str(Path.cwd()))
 
     asyncio.run(_run(config))
 
