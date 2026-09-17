@@ -41,7 +41,7 @@ scripts/
   build_*_dataset.py     # convert a loose export into a benchmark's strict shape
 
 docs/
-  mtacifbench-design.md  # what MTACIFBench measures and how it is scored
+  mtacifbench-design.md  # the decisions a MTAC-IFBench harness has to get right
 
 benchmarks/              # Benchmark definitions (outside src/)
   mtacifbench/
