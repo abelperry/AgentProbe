@@ -205,9 +205,9 @@ def test_collect_metrics_counts_errors_in_denominator() -> None:
 
     scores, success_count = task.collect_metrics(judgements)
 
+    # Coverage lives on MetricsRecord, not in scores; success_count is the
+    # second element of the tuple.
     assert success_count == 2
-    assert scores["num_total"] == 3
-    assert scores["num_success"] == 2
     assert scores["num_main_complete"] == 2
     assert scores["average"] == pytest.approx((1.0 + 0.5 + 0.0) / 3 * 100)
     assert scores["adj-average"] == pytest.approx((1.0 + 0.5 * 0.9 + 0.0) / 3 * 100)

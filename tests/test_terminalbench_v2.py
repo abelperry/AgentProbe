@@ -25,11 +25,17 @@ class FakeVerifierSandbox:
 
     async def exec_cmd(self, cmd: str, timeout_sec: int | None = None) -> ExecResult:
         self.commands.append((cmd, timeout_sec))
-        if cmd.startswith("cat /logs/verifier/ctrf.json"):
-            return ExecResult(stdout=self.ctrf, stderr="", exit_code=0)
-        if cmd.startswith("cat /logs/verifier/reward.txt"):
-            return ExecResult(stdout="1", stderr="", exit_code=0)
         return ExecResult(stdout=self.test_log, stderr="", exit_code=0)
+
+    async def read_file(self, path: str) -> str:
+        # The verifier reads its artifacts through the files API rather than a
+        # remote `cat`, so a fake that only answers exec_cmd would silently
+        # report every task as scoring 0.
+        if path == "/logs/verifier/ctrf.json":
+            return self.ctrf
+        if path == "/logs/verifier/reward.txt":
+            return "1"
+        raise FileNotFoundError(path)
 
 
 def _j(qid: str, score: float, error: Error | None = None) -> TerminalBenchV2Judgement:
@@ -68,7 +74,7 @@ def test_agent_prompt_adds_anti_stall_prefix() -> None:
 
 def test_collect_metrics_empty() -> None:
     scores, success_count = TerminalBenchV2Task().collect_metrics([])
-    assert scores == {"num_total": 0, "num_success": 0, "average": 0.0}
+    assert scores == {"average": 0.0}
     assert success_count == 0
 
 
@@ -80,8 +86,9 @@ def test_collect_metrics_uses_total_denominator_and_success_count() -> None:
             _j("q3", 1.0, Error(code=-1, message="boom")),
         ]
     )
-    assert scores["num_total"] == 3
-    assert scores["num_success"] == 2
+    # Coverage is reported by the framework as MetricsRecord.total /
+    # .success_count, so scores carries only the benchmark's own metric. The
+    # failing task still counts in the denominator: it is unresolved, not passed.
     assert scores["average"] == pytest.approx(1 / 3 * 100)
     assert success_count == 2
 
