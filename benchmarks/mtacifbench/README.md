@@ -105,8 +105,10 @@ python scripts/pull_benchmarks.py mtacifbench --split lite   # or the 20-task su
 
 That leaves a runnable `benchmarks/mtacifbench/data/`: the chosen split placed as
 `questions.jsonl`, which is what the adapter reads, alongside the two judge
-configs tracked in this repo. They are byte-compatible with the dataset's own
-`eval_config/`, so a copy from either behaves the same.
+configs tracked in this repo. They mirror the dataset's own `eval_config/` apart
+from the agent version: that copy pins `2.1.14`, which cannot be installed
+offline because npm has no `@anthropic-ai/claude-code-linux-x64@2.1.14` — the
+platform builds start later. `scripts/init.sh` fetches `2.1.199`.
 
 `judge.yaml` scores instruction-following only; point the dataset's
 `judge_config_path` at `judge_if_function.yaml` to also build the final project
@@ -127,7 +129,7 @@ models:
 agents:
   claude_code:
     type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
-    version: "2.1.14"
+    version: "2.1.199"
     offline: true
     offline_package_dir: ${OFFLINE_PACKAGE_DIR}
   # opencode:
@@ -146,6 +148,25 @@ uv run agentprobe -c examples/exp-mtacifbench.yaml -l info
 ```
 
 Results land under `output/{experiment}/{dataset}/{agent}/{model}/`, with aggregated metrics in `metrics.jsonl`.
+
+### `models.*.timeout` is per round, and gets multiplied
+
+A task runs 5 to 10 rounds in one sandbox, so the sandbox has to outlive all of
+them: `timeout_sec = timeout * rounds + build grace`, while `timeout` itself
+bounds a single round. That product is checked against the OpenSandbox server's
+`max_sandbox_timeout_seconds` (86400 by default), so a value that looks
+reasonable per round fails at sandbox creation on the longest tasks:
+
+| `timeout` | 10-round budget | Creates? |
+|---|---|---|
+| 37800 | 378900 | no |
+| 10800 (the default) | 108900 | no |
+| 7200 | 72900 | yes |
+
+The failure is `Create sandbox failed: Sandbox timeout ... exceeds configured
+maximum`, recorded as a rerunnable error rather than a score — so it shows up as
+missing coverage, not as a bad model. Keep `timeout` at or below
+`(max_sandbox_timeout_seconds - 900) / 10`.
 
 ## 👏 Citation
 

@@ -1,5 +1,9 @@
-# Instruction following only. See judge_if_function.yaml to also build the
-# project and score its function checklist.
+# Instruction following only. The agent version differs from the dataset's
+# eval_config/ copy: that one pins 2.1.14, which has no offline package on
+# npm (the platform builds start later). scripts/init.sh fetches 2.1.199.
+#
+# See judge_if_function.yaml to also build the project and score its function
+# checklist.
 
 docker: "dayong657/playwright-mcp-base:0.1.0"
 
@@ -13,6 +17,6 @@ model:
 
 agent:
   type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
-  version: "2.1.14"
+  version: "2.1.199"
   offline: true
   offline_package_dir: ${OFFLINE_PACKAGE_DIR}
