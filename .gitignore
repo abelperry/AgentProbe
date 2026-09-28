@@ -49,6 +49,10 @@ uv.lock
 # Each level is re-excluded before whitelisting, because git will not descend
 # into an ignored directory to find a negated file inside it.
 data/
+!benchmarks/mtacifbench/data/
+benchmarks/mtacifbench/data/*
+!benchmarks/mtacifbench/data/judge.yaml
+!benchmarks/mtacifbench/data/judge_if_function.yaml
 !benchmarks/zbackendbench/data/
 benchmarks/zbackendbench/data/*
 !benchmarks/zbackendbench/data/judge.yaml
@@ -59,6 +63,12 @@ benchmarks/zbackendbench/data/tasks/*
 !benchmarks/zbackendbench/data/tasks/dioxus_2/
 # Reference fixes stay out: the two tasks are meant to be run, not read.
 benchmarks/zbackendbench/data/tasks/*/solution/
+
+# Judge configs are configuration, not data: they name a model and an agent,
+# carry no questions, and a clone needs them to run anything at all.
+!benchmarks/mtacifbench/data/
+benchmarks/mtacifbench/data/*
+!benchmarks/mtacifbench/data/judge*.yaml
 
 .vscode/
 .sandbox.toml

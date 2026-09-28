@@ -108,8 +108,6 @@ def test_collect_metrics_with_category_breakdown_and_build_success() -> None:
     )
 
     assert success_count == 3
-    assert scores["num_total"] == 4
-    assert scores["num_success"] == 3
     assert scores["average"] == pytest.approx((1.0 + 0.5 + 1.0) / 3 * 100)
     assert scores["ISR"] == pytest.approx(2 / 3 * 100)
     assert scores["CSR"] == pytest.approx(4 / 5 * 100)

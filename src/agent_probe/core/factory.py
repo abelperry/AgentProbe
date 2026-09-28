@@ -67,6 +67,7 @@ class ExperimentFactory:
                 dataset_cfg.adapter_type,
                 data_dir=dataset_cfg.data_dir,
                 question_type=question_type,
+                **dataset_cfg.options,
             )
         return adapters
 

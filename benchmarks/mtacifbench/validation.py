@@ -11,12 +11,21 @@ and any failure degrades to the judge rather than scoring the constraint 0.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
+
+from benchmarks.mtacifbench.models import (
+    FAIL_CONCLUSION,
+    PASS_CONCLUSION,
+    IFCheckResult,
+    IFConstraint,
+)
 
 # Entry-point names the dataset uses, in priority order.
 PREFERRED_VALIDATOR_NAMES = (
@@ -192,3 +201,271 @@ def run_validation_code(
             )
             return None
         return bool(verdict.get("passed"))
+
+
+def parse_check_results(
+    output: str,
+    checklist: list[IFConstraint],
+) -> list[IFCheckResult] | None:
+    """Parse judge blocks using the standard MTAC-IFBench format tolerance."""
+    expected_count = len(checklist)
+    if expected_count == 0:
+        return []
+    if not output:
+        return None
+
+    results = _parse_marked_check_blocks(output, checklist)
+    if results is None or len(results) != expected_count:
+        return None
+    return results
+
+
+def _parse_marked_check_blocks(
+    output: str,
+    checklist: list[IFConstraint],
+) -> list[IFCheckResult] | None:
+    start_pattern = re.compile(
+        r"(?:^|\n)\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?"
+        r"[\[【]\s*要求\s*(\d+)\s*[-－—]\s*开始\s*[\]】](?:\*\*)?",
+        re.MULTILINE,
+    )
+    starts = list(start_pattern.finditer(output))
+    if not starts:
+        return None
+
+    results_by_index: dict[int, IFCheckResult] = {}
+    for position, start_match in enumerate(starts):
+        index = int(start_match.group(1))
+        next_start = starts[position + 1].start() if position + 1 < len(starts) else len(output)
+        block = output[start_match.end() : next_start]
+        block = _strip_matching_end_marker(block, index)
+        parsed = _parse_single_check_block(index, block, checklist)
+        if parsed is not None:
+            results_by_index[index] = parsed
+
+    expected_indices = set(range(1, len(checklist) + 1))
+    if set(results_by_index) != expected_indices:
+        return None
+    return [results_by_index[index] for index in range(1, len(checklist) + 1)]
+
+
+def _strip_matching_end_marker(block: str, index: int) -> str:
+    end_pattern = re.compile(
+        rf"(?:#{{1,6}}\s*)?(?:[-*+]\s*)?(?:\*\*)?"
+        rf"[\[【]\s*要求\s*{index}\s*[-－—]\s*结束\s*[\]】](?:\*\*)?",
+        re.MULTILINE,
+    )
+    return end_pattern.sub("", block).strip()
+
+
+def _parse_single_check_block(
+    index: int,
+    block: str,
+    checklist: list[IFConstraint],
+) -> IFCheckResult | None:
+    fields = _extract_labeled_fields(block)
+    conclusion_text = _clean_parsed_field(fields.get("结论", ""))
+    conclusion = normalize_conclusion(conclusion_text)
+    if conclusion is None:
+        return None
+
+    requirement = _clean_parsed_field(fields.get("要求", ""))
+    analysis = _clean_parsed_field(fields.get("分析", ""))
+    if _looks_like_prompt_template_placeholder(requirement, analysis, conclusion_text):
+        return None
+
+    if not requirement and 1 <= index <= len(checklist):
+        requirement = checklist[index - 1].constraint
+    return IFCheckResult(
+        index=index,
+        requirement=requirement,
+        analysis=analysis,
+        conclusion=conclusion,
+        source="judge",
+    )
+
+
+def _extract_labeled_fields(block: str) -> dict[str, str]:
+    field_pattern = re.compile(
+        r"(?m)^\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?"
+        r"(要求|分析|结论)\s*\d*\s*(?:\*\*)?\s*[:：]\s*(.*)$"
+    )
+    matches = list(field_pattern.finditer(block))
+    fields: dict[str, str] = {}
+    for position, match in enumerate(matches):
+        label = match.group(1)
+        if label in fields and label != "结论":
+            continue
+        next_start = matches[position + 1].start() if position + 1 < len(matches) else len(block)
+        inline_value = match.group(2).strip()
+        following_value = block[match.end() : next_start].strip()
+        if label == "结论":
+            value = inline_value
+            verdict_pattern = re.compile(
+                r"\[\[?\s*(?:没有)?满足了?该要求\s*\]?\]|(?:没有)?满足了?该要求"
+            )
+            if following_value and not verdict_pattern.search(value):
+                for line in following_value.splitlines():
+                    stripped_line = line.strip()
+                    if verdict_pattern.search(stripped_line):
+                        value = f"{value}\n{stripped_line}".strip() if value else stripped_line
+                        break
+            if not value and following_value:
+                value = next(
+                    (line.strip() for line in following_value.splitlines() if line.strip()),
+                    "",
+                )
+            fields[label] = value
+            continue
+        value = inline_value
+        if following_value:
+            value = f"{value}\n{following_value}".strip() if value else following_value
+        fields[label] = value
+    return fields
+
+
+def _clean_parsed_field(value: str) -> str:
+    value = str(value or "").strip()
+    value = re.sub(r"```+\s*$", "", value).strip()
+    value = re.sub(r"^(?:```[^\n]*\n)+", "", value).strip()
+    value = re.sub(
+        r"(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?"
+        r"[\[【]\s*要求\s*\d+\s*[-－—]\s*结束\s*[\]】](?:\*\*)?",
+        "",
+        value,
+    ).strip()
+    return value
+
+
+def _looks_like_prompt_template_placeholder(*values: str) -> bool:
+    text = "\n".join(str(value or "") for value in values)
+    placeholder_markers = (
+        "此处直接给出要求列表",
+        "此处结合人工智能助手",
+        "此处只能是 [[满足了该要求]] 或 [[没有满足该要求]]",
+    )
+    return any(marker in text for marker in placeholder_markers)
+
+
+def normalize_conclusion(conclusion: str) -> str | None:
+    """Accept small format drift while preserving verdict polarity."""
+    conclusion = str(conclusion or "").strip()
+    negative_patterns = (
+        r"\[\[\s*没有满足该要求\s*\]\]",
+        r"\[\s*没有满足该要求\s*\]",
+        r"没有满足该要求",
+        r"\[\[\s*没有满足了该要求\s*\]\]",
+        r"\[\s*没有满足了该要求\s*\]",
+        r"没有满足了该要求",
+    )
+    positive_patterns = (
+        r"\[\[\s*满足了该要求\s*\]\]",
+        r"\[\s*满足了该要求\s*\]",
+        r"满足了该要求",
+    )
+    if any(re.search(pattern, conclusion) for pattern in negative_patterns):
+        return FAIL_CONCLUSION
+    if any(re.search(pattern, conclusion) for pattern in positive_patterns):
+        return PASS_CONCLUSION
+    return None
+
+
+def collect_judge_candidates(
+    primary_output: str,
+    command_output: str,
+    trace_dir: Path,
+) -> list[str]:
+    """Collect standard parser candidates plus agent transport fallbacks."""
+    from benchmarks.mtacifbench.utils import (  # local to keep checker driver lean
+        extract_text_content,
+        parse_jsonl_result,
+        parse_trace_messages,
+    )
+
+    candidates: list[str] = []
+
+    def add_candidate(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+        for derived_text in _derive_parse_candidate_texts(text):
+            if derived_text and derived_text not in candidates:
+                candidates.append(derived_text)
+
+    add_candidate(parse_jsonl_result(command_output))
+
+    for raw_line in str(command_output or "").splitlines():
+        try:
+            event = json.loads(raw_line.strip())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        if event_type == "assistant":
+            message = event.get("message") or {}
+            content = message.get("content") or []
+            if isinstance(content, str):
+                add_candidate(content)
+                continue
+            if isinstance(content, list):
+                text_parts = [
+                    str(item.get("text") or "").strip()
+                    for item in content
+                    if isinstance(item, dict)
+                    and item.get("type") == "text"
+                    and str(item.get("text") or "").strip()
+                ]
+                if text_parts:
+                    add_candidate("\n".join(text_parts))
+            continue
+        if event_type == "result":
+            add_candidate(event.get("result"))
+
+    add_candidate(command_output)
+    add_candidate(primary_output)
+    trace_texts: list[str] = []
+    if trace_dir.is_dir():
+        for trace_path in sorted(trace_dir.glob("*")):
+            if not trace_path.is_file():
+                continue
+            try:
+                messages = parse_trace_messages(
+                    trace_path.read_text(encoding="utf-8", errors="ignore")
+                )
+            except OSError:
+                continue
+            trace_texts.extend(
+                extract_text_content(message.get("content"))
+                for message in messages
+                if message.get("role") == "assistant"
+            )
+    for text in reversed(trace_texts):
+        add_candidate(text)
+    return candidates
+
+
+def _derive_parse_candidate_texts(text: str) -> list[str]:
+    """Slice marker spans and fenced blocks out of a candidate.
+
+    A judge that wraps its verdict in prose or a code fence still parses: the
+    marker span and each fenced block are offered as additional candidates.
+    """
+    if not text:
+        return []
+
+    candidates: list[str] = []
+    marker_pattern = re.compile(r"[\[【]\s*要求\s*\d+\s*[-－—]\s*开始\s*[\]】]")
+    first_marker = marker_pattern.search(text)
+    last_end_marker = None
+    for match in re.finditer(r"[\[【]\s*要求\s*\d+\s*[-－—]\s*结束\s*[\]】]", text):
+        last_end_marker = match
+    if first_marker and last_end_marker and last_end_marker.end() > first_marker.start():
+        candidates.append(text[first_marker.start() : last_end_marker.end()].strip())
+
+    for fence_match in re.finditer(r"```(?:[^\n]*)\n(.*?)```", text, re.DOTALL):
+        fenced = fence_match.group(1).strip()
+        if marker_pattern.search(fenced):
+            candidates.append(fenced)
+
+    return candidates

@@ -20,6 +20,13 @@ class BaseAgent(ABC):
     eval unit, and use them to configure environment variables, CLI flags, etc.
     """
 
+    #: Files this CLI reads as standing project instructions, most preferred
+    #: first. MTAC-IFBench's ``repository_policy`` is defined as the content of
+    #: such a file, so it is written into the workspace rather than passed out
+    #: of band -- the agent is meant to be able to read it, and constraints in
+    #: the data refer to it.
+    project_instruction_filenames: tuple[str, ...] = ("CLAUDE.md",)
+
     def __init__(
         self,
         agent_config: AgentConfig,

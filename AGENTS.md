@@ -25,7 +25,7 @@ src/agent_probe/
     agent.py                # BaseAgent interface
     adapter.py              # Question loading (local_jsonl)
     repo.py, factory.py     # persistence ports, composition root
-  agents/                   # ClaudeCodeAgent, OpenClaw, mini-swe-agent
+  agents/                   # ClaudeCodeAgent, OpenCodeAgent, OpenClaw, mini-swe-agent
   executors/                # PipelineExecutor (inference -> queue -> judge)
   repos/                    # file-based JudgeRepo / MetricsRepo
 benchmarks/<name>/          # one directory per benchmark (see below)

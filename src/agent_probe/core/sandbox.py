@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 import uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -41,9 +43,25 @@ AgentFactory = Callable[["AgentConfig", "ModelConfig"], "BaseAgent"]
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int from the environment, falling back on bad input."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("{}={!r} is not an integer; using {}", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("{}={} must be positive; using {}", name, value, default)
+        return default
+    return value
+
+
 class ResourceSpec(BaseModel):
-    cpus: int = 4
-    memory_mb: int = 4096
+    cpus: int = Field(default_factory=lambda: _env_int("AGENTPROBE_SANDBOX_CPUS", 4))
+    memory_mb: int = Field(default_factory=lambda: _env_int("AGENTPROBE_SANDBOX_MEMORY_MB", 4096))
     storage_mb: int = 10240
     gpus: int = 0
 
@@ -57,6 +75,10 @@ class SandboxSpec(BaseModel):
     env_vars: dict[str, str] = Field(default_factory=dict)
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
     timeout_sec: int = 10800
+    # Per-prompt cap handed to the agent CLI. ``timeout_sec`` bounds the whole
+    # sandbox; a multi-round task needs each round bounded separately, or one
+    # stuck round eats the budget of every round after it.
+    agent_timeout_sec: int | None = None
     workspace: Optional[str] = None
     volumes: list[Volume] = Field(default_factory=list)
 
@@ -121,6 +143,7 @@ class Sandbox:
             domain=spec.sandbox_config.host,
             api_key=spec.sandbox_config.api_key or None,
             request_timeout=timedelta(seconds=spec.sandbox_config.request_timeout),
+            use_server_proxy=spec.sandbox_config.use_server_proxy,
         )
         self.env_vars = spec.env_vars
         self.session_id: str = str(uuid.uuid4())
@@ -220,6 +243,9 @@ class Sandbox:
                 result.rounds.append(exec_result)
 
                 if output_dir:
+                    # Clear first: a failed export or parse must not leave the
+                    # previous round's reply standing in for this one.
+                    result.last_assistant = None
                     try:
                         await agent.collect_traces(self, output_dir)
                         result.last_assistant = await agent.collect_last_assistant(
@@ -227,6 +253,11 @@ class Sandbox:
                         )
                     except Exception as e:
                         logger.warning("per-round trace collection failed: {}", e)
+
+                round_error = self._round_error(exec_result, result.last_assistant)
+                if round_error is not None:
+                    result.error = round_error
+                    break
 
                 # Check for next round
                 if self.spec.on_nextround:
@@ -239,28 +270,44 @@ class Sandbox:
                 else:
                     break
 
-        # 5. Parse error — exec exit_code first, then trace stop_reason
-        if result.last and result.last.exit_code != 0:
-            last_assistant_error = (
-                result.last_assistant.error_message if result.last_assistant else None
-            )
-            result.error = Error(
-                code=ErrorCode.AGENT_EXIT_NONZERO,
-                message=last_assistant_error
-                or (result.last.stderr or "")[-500:]
-                or "Non-zero exit code",
-            )
-        elif result.last_assistant and result.last_assistant.stop_reason == "error":
-            result.error = Error(
-                code=ErrorCode.AGENT_STOP_ERROR,
-                message=result.last_assistant.error_message or "agent stopped with error",
-            )
+        # 5. Parse error — a per-round check may already have set one.
+        if result.error is None:
+            result.error = self._round_error(result.last, result.last_assistant)
 
         # 6. Complete (side-effect only, e.g. cleanup)
         if self.spec.on_complete:
             await self.spec.on_complete(self, result)
 
         return result
+
+    def _round_error(
+        self,
+        exec_result: ExecResult | None,
+        last_assistant: LastAssistant | None,
+    ) -> Error | None:
+        """Classify one round's outcome, or ``None`` when it is healthy.
+
+        Order matters. A non-zero exit is *not* conclusive on its own: agent
+        CLIs regularly exit non-zero on teardown after they have already
+        delivered a complete final answer, and discarding that round would
+        throw away real work. So a complete response wins over the exit code,
+        and only then do the trace-level signals get a say.
+        """
+        complete = bool(last_assistant and last_assistant.is_complete_response)
+
+        if exec_result is not None and exec_result.exit_code != 0 and not complete:
+            return Error(
+                code=ErrorCode.AGENT_EXIT_NONZERO,
+                message=(last_assistant.error_message if last_assistant else None)
+                or (exec_result.stderr or exec_result.stdout or "")[-500:]
+                or "Non-zero exit code",
+            )
+        if last_assistant and last_assistant.stop_reason == "error":
+            return Error(
+                code=ErrorCode.AGENT_STOP_ERROR,
+                message=last_assistant.error_message or "agent stopped with error",
+            )
+        return None
 
     # ------------------------------------------------------------------
     # Atomic operations — used by Hooks and Agents
@@ -332,26 +379,50 @@ class Sandbox:
             batch = files_to_write[i : i + batch_size]
             await self.write_files(batch)
 
-    async def download_directory(self, remote_dir: str, local_tar_path: Path) -> None:
+    async def download_directory(
+        self,
+        remote_dir: str,
+        local_tar_path: Path,
+        exclude_dirs: tuple[str, ...] = (),
+    ) -> None:
         """Stream-download a sandbox directory as tar.gz to a local file."""
-        check = await self.exec_cmd(f"test -d {remote_dir}")
+        quoted_remote_dir = shlex.quote(remote_dir)
+        check = await self.exec_cmd(f"test -d {quoted_remote_dir}")
         if check.exit_code != 0:
             raise FileNotFoundError(f"Remote directory not found: {remote_dir}")
 
         local_tar_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_tar = "/tmp/_export.tar.gz"
-        tar_result = await self.exec_cmd(f"tar czf {tmp_tar} -C {remote_dir} .")
+        exclude_args = " ".join(
+            f"--exclude={shlex.quote(name)} --exclude={shlex.quote(f'*/{name}')}"
+            for name in exclude_dirs
+        )
+        tar_result = await self.exec_cmd(
+            " ".join(
+                part
+                for part in (
+                    "tar czf",
+                    shlex.quote(tmp_tar),
+                    exclude_args,
+                    "-C",
+                    quoted_remote_dir,
+                    ".",
+                )
+                if part
+            )
+        )
         if tar_result.exit_code != 0:
             raise RuntimeError(
                 f"tar failed for {remote_dir}: {tar_result.stderr.strip()[-500:]}"
             )
 
-        aiter = await self.os_sandbox.files.read_bytes_stream(tmp_tar)
-        async with aiofiles.open(local_tar_path, "wb") as f:
-            async for chunk in aiter:
-                await f.write(chunk)
-
-        await self.exec_cmd(f"rm -f {tmp_tar}")
+        try:
+            aiter = await self.os_sandbox.files.read_bytes_stream(tmp_tar)
+            async with aiofiles.open(local_tar_path, "wb") as f:
+                async for chunk in aiter:
+                    await f.write(chunk)
+        finally:
+            await self.exec_cmd(f"rm -f {shlex.quote(tmp_tar)}")
 
     async def search_files(self, path: str, pattern: str) -> list[str]:
         """Search sandbox for files matching a glob pattern."""

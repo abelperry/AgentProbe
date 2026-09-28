@@ -7,8 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_probe.config import EvalExperimentConfig
-
+from agent_probe.config import EvalExperimentConfig, JudgeConfig
 
 # ---------------------------------------------------------------------------
 # Parametrized: env-var expansion
@@ -179,3 +178,32 @@ def test_missing_required_field(tmp_path: Path, missing_field: str):
 
     with pytest.raises(Exception):
         EvalExperimentConfig.from_yaml(cfg_file)
+
+
+def test_function_judge_config_resolves_relative_mcp_path(tmp_path: Path) -> None:
+    mcp_file = tmp_path / "playwright.json"
+    mcp_file.write_text("{}", encoding="utf-8")
+    cfg_file = tmp_path / "judge.yaml"
+    cfg_file.write_text(
+        yaml.safe_dump(
+            {
+                "model": {"base_url": "https://judge.test", "api_key": "main"},
+                "agent": {"type": "x.Agent"},
+                "function_checklist_eval_enabled": True,
+                "function_model": {
+                    "base_url": "https://function.test",
+                    "api_key": "function",
+                },
+                "function_agent": {
+                    "type": "x.FunctionAgent",
+                    "mcp_host_path": "playwright.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = JudgeConfig.from_yaml(cfg_file)
+    function_model, function_agent = cfg.function_runtime()
+    assert cfg.function_checklist_eval_enabled is True
+    assert function_model.base_url == "https://function.test"
+    assert function_agent.mcp_host_path == str(mcp_file)

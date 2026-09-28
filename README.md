@@ -26,6 +26,7 @@ src/agent_probe/
     factory.py           # ExperimentFactory (composition root)
   agents/
     claude_code.py       # ClaudeCodeAgent implementation
+    opencode.py          # OpenCodeAgent (Node CLI; needs a Node runtime offline)
   executors/
     pipeline_executor.py # Concurrent inference -> judge pipeline
   repos/
@@ -40,7 +41,7 @@ scripts/
   build_*_dataset.py     # convert a loose export into a benchmark's strict shape
 
 docs/
-  mtacifbench-design.md  # what MTACIFBench measures and how it is scored
+  mtacifbench-design.md  # the decisions a MTAC-IFBench harness has to get right
 
 benchmarks/              # Benchmark definitions (outside src/)
   mtacifbench/
@@ -100,7 +101,9 @@ registry checksum and reused, and an already-running server is left alone.
   benchmark that starts a container per round hits `ECONNRESET` otherwise, and
   judge images have no npm to fall back on. Downloaded with `curl` and checked
   against the registry's own sha512, so the host needs no Node at all. Pass
-  `--musl` if your sandbox images are Alpine-based.
+  `--musl` if your sandbox images are Alpine-based, and `--opencode` to also
+  fetch the OpenCode CLI plus the Node runtime it needs (unlike Claude Code it
+  is not a self-contained binary).
 - **Starts the OpenSandbox server.** Generates `.sandbox.toml` from the packaged
   docker example if absent, launches the server in the background
   (`.sandbox.log`, `.sandbox.pid`) and waits for the port. Without an API key the
@@ -172,7 +175,7 @@ repo maps 1:1 into `benchmarks/<bench>/data/`:
 uv pip install huggingface_hub
 
 # pull one benchmark
-python scripts/pull_benchmarks.py --org AbelNexux mtacifbench
+python scripts/pull_benchmarks.py mtacifbench
 
 # or every benchmark hosted by an org/user
 python scripts/pull_benchmarks.py --org your-org
@@ -183,7 +186,7 @@ python scripts/pull_benchmarks.py --repo swebench=princeton-nlp/SWE-bench_Verifi
 
 | Benchmark | Dataset | Status |
 |---|---|---|
-| `mtacifbench` | [AbelNexux/mtacifbench](https://huggingface.co/datasets/AbelNexux/mtacifbench) | published |
+| `mtacifbench` | [thu-coai/MTAC-IFBench](https://huggingface.co/datasets/thu-coai/MTAC-IFBench) | published |
 | `zbackendbench` | 2 sample tasks tracked in this repo | full set not published |
 | others | — | not published yet |
 
@@ -263,13 +266,14 @@ Variables the shipped configs expect:
 | Variable | Used for |
 |---|---|
 | `GATEWAY_BASE_URL` | Base URL of your model gateway (`examples/*.yaml`, judge configs) |
+| `AGENTPROBE_AUTH_FILE` | Credential file for `api_name` model entries when `auth_file` is omitted |
 | `OFFLINE_PACKAGE_DIR` | Host dir holding the `npm pack` tarballs from step 3 |
 | `HTTP_PROXY_URL`, `NO_PROXY_HOSTS` | Egress proxy for sandboxes that need one |
 | `MTACIF_JUDGE_IMAGE`, `MRCC_JUDGE_IMAGE`, `ZFRONT_JUDGE_IMAGE`, `DEFAULT_PLAYWRIGHT_IMAGE`, `DEFAULT_INFER_IMAGE`, `DEFAULT_EVAL_IMAGE` | Fallback images when the data omits them |
 | `SWEBENCH_PRO_IMAGE_REPO` | Registry holding the SWE-bench Pro instance images |
 | `EXTRACT_API_BASE_URL` | Score-extraction endpoint (mrccbench) |
 | `SANDBOX_KEY` | OpenSandbox server API key |
-| `ZHIPU_API_KEY`, `GATEWAY_API_KEY`, `GLM_API_KEY`, `DEEPSEEK_API_KEY` | Model credentials |
+| `ZHIPU_API_KEY`, `GATEWAY_API_KEY`, `GLM_API_KEY` | Model credentials |
 
 Keep these in a launcher script — `run.sh` and `run-*.sh` are git-ignored for
 exactly this reason.

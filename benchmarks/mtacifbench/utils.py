@@ -9,6 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import pysbd  # type: ignore[import-untyped]
 from loguru import logger
 
 TOOL_RESULT_PLACEHOLDER = "[工具返回结果已省略]"
@@ -41,6 +42,89 @@ def sanitize_api_error_text(value: Any) -> str:
     if match:
         summary = summary[: match.start()].rstrip()
     return summary[:2000]
+
+
+def find_agent_api_error(*values: Any) -> str | None:
+    """Return a sanitized Claude Code or OpenCode API error."""
+    for value in values:
+        text = str(value or "")
+        for prefix in ("API Error:", "OpenCode error:"):
+            marker = text.find(prefix)
+            if marker >= 0:
+                return sanitize_api_error_text(text[marker:])
+    return None
+
+
+def parse_jsonl_result(content: str) -> str:
+    """Extract the final response from Claude Code or OpenCode JSONL."""
+    from agent_probe.agents.opencode_output import extract_opencode_error
+
+    last_text = ""
+    final_result = ""
+    empty_result_summary = ""
+    saw_agent_jsonl = False
+    for line in str(content or "").splitlines():
+        try:
+            data = json.loads(line.strip())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        event_type = data.get("type")
+        if event_type in {
+            "system",
+            "user",
+            "assistant",
+            "result",
+            "step_start",
+            "tool_use",
+            "text",
+            "reasoning",
+            "step_finish",
+            "error",
+        }:
+            saw_agent_jsonl = True
+        if event_type == "assistant":
+            message = data.get("message") or {}
+            content_items = message.get("content") or []
+            if isinstance(content_items, str):
+                assistant_text = content_items.strip()
+            else:
+                assistant_text = "\n".join(
+                    str(item.get("text") or "").strip()
+                    for item in content_items
+                    if isinstance(item, dict)
+                    and item.get("type") == "text"
+                    and str(item.get("text") or "").strip()
+                ).strip()
+            if assistant_text:
+                last_text = assistant_text
+        elif event_type == "result":
+            result = sanitize_api_error_text(data.get("result"))
+            if result:
+                final_result = result
+            empty_result_summary = (
+                "Agent result is empty "
+                f"(subtype={data.get('subtype') or 'unknown'}, "
+                f"is_error={data.get('is_error')})"
+            )
+        elif event_type == "text":
+            part = data.get("part")
+            text = str(part.get("text") or "").strip() if isinstance(part, dict) else ""
+            if text:
+                last_text = text
+    opencode_error = extract_opencode_error(content)
+    if opencode_error:
+        return f"OpenCode error: {opencode_error}"
+    if final_result:
+        return final_result
+    if last_text:
+        return last_text
+    if empty_result_summary:
+        return empty_result_summary
+    if saw_agent_jsonl:
+        return "Agent result is empty; no final assistant text was captured"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -79,25 +163,14 @@ def count_word(text: str) -> int:
 
 
 @lru_cache(maxsize=1)
-def _sentence_pattern() -> re.Pattern[str]:
-    """Split on runs of CJK/ASCII sentence terminators.
-
-    Deliberately hand-rolled rather than pulling in ``pysbd``: that package ships
-    its own top-level ``benchmarks`` module, which shadows this repo's
-    ``benchmarks`` package and breaks every benchmark import. No constraint in
-    the dataset calls ``split_sentences``, so the dependency buys nothing.
-    """
-    return re.compile(r"[^。！？!?…；;]*?[。！？!?…；;]+|[^。！？!?…；;]+")
+def _get_sentence_segmenter() -> pysbd.Segmenter:
+    return pysbd.Segmenter(language="zh")
 
 
 def split_sentences(text: str) -> list[str]:
-    sentences: list[str] = []
-    for line in str(text or "").splitlines():
-        for match in _sentence_pattern().finditer(line):
-            sentence = match.group().strip()
-            if sentence:
-                sentences.append(sentence)
-    return sentences
+    return [
+        sentence.strip() for sentence in _get_sentence_segmenter().segment(text) if sentence.strip()
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +245,7 @@ def _normalize_message(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_trace_messages(trace_text: str) -> list[dict[str, Any]]:
-    """Parse a Claude Code session JSONL into normalized user/assistant messages."""
+    """Parse Claude Code or OpenCode JSONL into normalized messages."""
     messages: list[dict[str, Any]] = []
     for raw_line in trace_text.splitlines():
         line = raw_line.strip()
@@ -184,13 +257,62 @@ def parse_trace_messages(trace_text: str) -> list[dict[str, Any]]:
             continue
         if not isinstance(event, dict):
             continue
-        # system/init events carry no evidence and only distract the judge.
-        if event.get("type") not in {"user", "assistant"}:
-            continue
+        event_type = event.get("type")
         message = event.get("message")
-        if not isinstance(message, dict):
+        if event_type in {"user", "assistant", "message"} and isinstance(message, dict):
+            if message.get("role") not in {"user", "assistant"}:
+                continue
+            messages.append(_normalize_message(message))
             continue
-        messages.append(_normalize_message(message))
+        if event_type in {"text", "reasoning"}:
+            part = event.get("part")
+            if not isinstance(part, dict):
+                continue
+            text = str(part.get("text") or "").strip()
+            if text:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": text}],
+                    }
+                )
+            continue
+        if event_type == "tool_use":
+            part = event.get("part")
+            if not isinstance(part, dict):
+                continue
+            raw_state = part.get("state")
+            state: dict[str, Any] = raw_state if isinstance(raw_state, dict) else {}
+            tool_use_id = str(part.get("id") or "")
+            tool_input = state.get("input")
+            if not isinstance(tool_input, dict):
+                tool_input = {} if tool_input is None else {"value": tool_input}
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "tool_use_id": tool_use_id,
+                                "name": str(part.get("tool") or "unknown"),
+                                "input": tool_input,
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": TOOL_RESULT_PLACEHOLDER,
+                                "is_error": state.get("status") == "error",
+                            }
+                        ],
+                    },
+                ]
+            )
     return messages
 
 

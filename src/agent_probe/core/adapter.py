@@ -44,9 +44,15 @@ class LocalJsonlAdapter(BaseAdapter[Q]):
     ``load()`` calls are efficient.
     """
 
-    def __init__(self, data_dir: str, question_type: type[Q]) -> None:
+    def __init__(
+        self,
+        data_dir: str,
+        question_type: type[Q],
+        include_ids: list[str | int] | None = None,
+    ) -> None:
         self.data_dir = Path(data_dir)
         self.question_type = question_type
+        self.include_ids = include_ids
         self._id_index: dict[str, int] = {}
         self._build_index()
 
@@ -56,6 +62,16 @@ class LocalJsonlAdapter(BaseAdapter[Q]):
             for line_no, line in enumerate(f):
                 q = self.question_type.model_validate_json(line)
                 self._id_index[q.qid()] = line_no
+        if self.include_ids is None:
+            return
+
+        requested_ids = [str(qid) for qid in self.include_ids]
+        if len(requested_ids) != len(set(requested_ids)):
+            raise ValueError("include_ids must not contain duplicate question IDs")
+        missing_ids = [qid for qid in requested_ids if qid not in self._id_index]
+        if missing_ids:
+            raise ValueError(f"include_ids contains unknown question IDs: {missing_ids}")
+        self._id_index = {qid: self._id_index[qid] for qid in requested_ids}
 
     def list_ids(self) -> list[str]:
         return list(self._id_index.keys())
@@ -74,7 +90,7 @@ class LocalJsonlAdapter(BaseAdapter[Q]):
 # Registry & factory
 # ---------------------------------------------------------------------------
 ADAPTER_REGISTRY: dict[str, type[BaseAdapter[Any]]] = {
-    "local_jsonl": LocalJsonlAdapter,  # type: ignore[dict-item]
+    "local_jsonl": LocalJsonlAdapter,
 }
 
 

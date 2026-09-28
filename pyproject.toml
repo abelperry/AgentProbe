@@ -18,8 +18,8 @@ dependencies = [
     "aiofiles>=23.0",
     "swebench>=4.0,<5.0",
     "mini-swe-agent>=2.3.0",
-    # mtacifbench: helper exposed to dataset-supplied validation code
-    "emoji>=2.12",
+    "emoji>=2.14",
+    "pysbd>=0.3.4",
 ]
 
 [project.scripts]

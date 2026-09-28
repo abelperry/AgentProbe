@@ -5,13 +5,17 @@
 # Safe to re-run: an existing package is verified against the registry checksum
 # and reused, and an already-listening server is left alone.
 #
-#   ./scripts/init.sh            # glibc sandbox images (the common case)
-#   ./scripts/init.sh --musl     # also fetch the musl build (Alpine images)
+#   ./scripts/init.sh              # Claude Code, glibc images (the common case)
+#   ./scripts/init.sh --musl       # also fetch the musl build (Alpine images)
+#   ./scripts/init.sh --opencode   # also fetch OpenCode and its Node runtime
 
 set -euo pipefail
 
 # Must match AgentConfig.version in src/agent_probe/config.py.
 CC_VERSION="2.1.199"
+# Must match OpenCodeAgent._DEFAULT_VERSION and AgentConfig.offline_node_version.
+OPENCODE_VERSION="1.1.21"
+NODE_VERSION="22.21.1"
 
 REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org}"
 SCOPE="@anthropic-ai"
@@ -23,12 +27,15 @@ ENV_FILE=".agentprobe-env"
 EXAMPLE_CONFIG="examples/experiment.yaml"
 
 WANT_MUSL=0
-[ "${1:-}" = "--musl" ] && WANT_MUSL=1
-case "${1:-}" in
-    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    ""|--musl) ;;
-    *) echo "unknown option: $1" >&2; exit 2 ;;
-esac
+WANT_OPENCODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --musl)     WANT_MUSL=1 ;;
+        --opencode) WANT_OPENCODE=1 ;;
+        -h|--help)  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *)          echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 say()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m warn\033[0m %s\n' "$*" >&2; }
@@ -41,8 +48,10 @@ command -v docker >/dev/null || die "docker is required by the sandbox docker ru
 
 if command -v sha512sum >/dev/null; then
     sha512() { sha512sum "$1" | cut -d' ' -f1; }
+    sha256() { sha256sum "$1" | cut -d' ' -f1; }
 else
     sha512() { shasum -a 512 "$1" | cut -d' ' -f1; }
+    sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
 fi
 
 # A 75 MB download over a flaky link fails often enough that resume and retry
@@ -63,21 +72,31 @@ if [ -t 1 ]; then curl_opts+=(--progress-bar); else curl_opts+=(--no-progress-me
 # Fetched with curl rather than `npm pack` so the host needs no Node at all. The
 # filenames below are exactly what npm pack would produce, which is what the
 # in-sandbox installer looks for.
-say "Claude Code $CC_VERSION -> $OFFLINE_DIR"
+say "offline packages -> $OFFLINE_DIR"
 mkdir -p "$OFFLINE_DIR"
 
-fetch_package() {
-    local pkg="$1"                                   # e.g. claude-code-linux-x64
-    local dest="$OFFLINE_DIR/anthropic-ai-$pkg-$CC_VERSION.tgz"
+fetch_npm() {
+    local name="$1" version="$2"                     # e.g. @anthropic-ai/claude-code-linux-x64
+    # npm pack names the file after the package with "@" dropped and "/" -> "-",
+    # and that is exactly what the in-sandbox installer looks for. Build the
+    # basename first: substituting on the full path would eat the directory's
+    # own slashes too.
+    local file="${name//@/}"
+    file="${file//\//-}-$version.tgz"
+    local dest="$OFFLINE_DIR/$file"
+    local encoded="${name//\//%2f}"
 
-    # The registry publishes each version's sha512, so a truncated or corrupted
-    # file is detectable instead of being silently reused forever.
-    local want
-    want="$(curl -fsSL -m 60 "$REGISTRY/$SCOPE%2f$pkg/$CC_VERSION" \
-        | python3 -c 'import base64, json, sys
-integrity = json.load(sys.stdin)["dist"]["integrity"].removeprefix("sha512-")
-print(base64.b64decode(integrity).hex())')" \
-        || die "cannot reach the npm registry for $pkg@$CC_VERSION"
+    # Ask the registry for both the checksum and the tarball URL: the published
+    # sha512 makes a truncated or corrupted file detectable instead of being
+    # silently reused forever, and dist.tarball beats guessing the path.
+    local meta want url
+    meta="$(curl -fsSL -m 60 "$REGISTRY/$encoded/$version")" \
+        || die "cannot reach the npm registry for $name@$version"
+    want="$(printf '%s' "$meta" | python3 -c 'import base64, json, sys
+dist = json.load(sys.stdin)["dist"]
+print(base64.b64decode(dist["integrity"].removeprefix("sha512-")).hex())')"
+    url="$(printf '%s' "$meta" | python3 -c 'import json, sys
+print(json.load(sys.stdin)["dist"]["tarball"])')"
 
     if [ -f "$dest" ] && [ "$(sha512 "$dest")" = "$want" ]; then
         say "already present: $(basename "$dest")"
@@ -85,19 +104,55 @@ print(base64.b64decode(integrity).hex())')" \
     fi
 
     say "downloading $(basename "$dest")"
-    curl "${curl_opts[@]}" -o "$dest.part" "$REGISTRY/$SCOPE/$pkg/-/$pkg-$CC_VERSION.tgz" \
+    curl "${curl_opts[@]}" -o "$dest.part" "$url" \
         || die "download failed -- partial data kept at $dest.part, re-run to resume"
 
     if [ "$(sha512 "$dest.part")" != "$want" ]; then
         rm -f "$dest.part"
-        die "checksum mismatch for $pkg@$CC_VERSION -- discarded, re-run to retry"
+        die "checksum mismatch for $name@$version -- discarded, re-run to retry"
     fi
     mv "$dest.part" "$dest"
     say "checksum verified"
 }
 
-fetch_package "claude-code-linux-x64"
-[ "$WANT_MUSL" -eq 1 ] && fetch_package "claude-code-linux-x64-musl"
+fetch_node() {
+    # OpenCode is a Node program, so an offline sandbox needs the runtime too.
+    # The Claude Code CLI does not -- it ships as a self-contained binary.
+    local archive="node-v$NODE_VERSION-linux-x64.tar.gz"
+    local dest="$OFFLINE_DIR/$archive"
+    local base="https://nodejs.org/dist/v$NODE_VERSION"
+
+    local want
+    want="$(curl -fsSL -m 60 "$base/SHASUMS256.txt" | awk -v f="$archive" '$2 == f {print $1}')" \
+        || die "cannot reach nodejs.org for v$NODE_VERSION"
+    [ -n "$want" ] || die "no checksum published for $archive"
+
+    if [ -f "$dest" ] && [ "$(sha256 "$dest")" = "$want" ]; then
+        say "already present: $archive"
+        return
+    fi
+
+    say "downloading $archive"
+    curl "${curl_opts[@]}" -o "$dest.part" "$base/$archive" \
+        || die "download failed -- partial data kept at $dest.part, re-run to resume"
+    if [ "$(sha256 "$dest.part")" != "$want" ]; then
+        rm -f "$dest.part"
+        die "checksum mismatch for $archive -- discarded, re-run to retry"
+    fi
+    mv "$dest.part" "$dest"
+    say "checksum verified"
+}
+
+say "Claude Code $CC_VERSION"
+fetch_npm "$SCOPE/claude-code-linux-x64" "$CC_VERSION"
+[ "$WANT_MUSL" -eq 1 ] && fetch_npm "$SCOPE/claude-code-linux-x64-musl" "$CC_VERSION"
+
+if [ "$WANT_OPENCODE" -eq 1 ]; then
+    say "OpenCode $OPENCODE_VERSION (plus Node $NODE_VERSION)"
+    fetch_node
+    fetch_npm "opencode-ai" "$OPENCODE_VERSION"
+    fetch_npm "opencode-linux-x64" "$OPENCODE_VERSION"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. OpenSandbox server

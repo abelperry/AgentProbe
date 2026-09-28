@@ -34,6 +34,10 @@ class LastAssistant(BaseModel):
     stop_reason: Optional[str] = None
     error_message: Optional[str] = None
     content_text: str = ""
+    # True only when the agent reached a natural end of turn. Agent CLIs can
+    # exit non-zero *after* finishing a round, and can exit zero having stopped
+    # early — neither the exit code nor the presence of text settles it.
+    is_complete_response: bool = False
 
 
 class BaseQuestion(BaseModel):
