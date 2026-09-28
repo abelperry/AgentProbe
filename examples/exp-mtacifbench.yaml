@@ -30,7 +30,7 @@ datasets:
 agents:
   claude_code:
     type: "agent_probe.agents.claude_code.ClaudeCodeAgent"
-    version: "2.1.14"
+    version: "2.1.199"
     offline: true
     offline_package_dir: ${OFFLINE_PACKAGE_DIR}
 
