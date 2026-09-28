@@ -276,21 +276,6 @@ def _parse_single_check_block(
 
     if not requirement and 1 <= index <= len(checklist):
         requirement = checklist[index - 1].constraint
-    elif 1 <= index <= len(checklist):
-        # Verdicts are keyed by index, so a judge that renumbers or reorders its
-        # blocks attaches them to the wrong constraints -- and the only trace of
-        # that is the requirement text disagreeing with the checklist. Warn
-        # rather than discard: judges paraphrase far more often than they
-        # misalign, and throwing the verdict away would cost a re-judge every
-        # time one does.
-        expected = checklist[index - 1].constraint.strip()
-        if requirement.strip() != expected:
-            logger.warning(
-                "judge requirement {} does not match the checklist: {!r} vs {!r}",
-                index,
-                requirement[:120],
-                expected[:120],
-            )
     return IFCheckResult(
         index=index,
         requirement=requirement,

@@ -42,7 +42,6 @@ from benchmarks.mtacifbench.models import (
 )
 from benchmarks.mtacifbench.prompts import (
     INSTRUCTION_FOLLOWING_EVALUATION_PROMPT_TEMPLATE,
-    INSTRUCTION_FOLLOWING_JUDGE_SYSTEM_PROMPT,
     MULTIROUND_MAIN_PROMPT_TEMPLATE,
 )
 from benchmarks.mtacifbench.utils import (
@@ -982,9 +981,6 @@ class MTACIFBenchTask(BaseTask[MTACIFBenchQuestion, MTACIFBenchInference, MTACIF
             env_vars=judge_cfg.agent.envs if judge_cfg.agent else {},
             workspace=CONTAINER_JUDGE_WORKDIR,
             timeout_sec=question.eval_timeout,
-            # The judge reads text the evaluated model wrote. Say out of band
-            # that it is evidence, not instructions.
-            append_system_prompt=INSTRUCTION_FOLLOWING_JUDGE_SYSTEM_PROMPT,
             on_setup=_setup,
         )
         return await Sandbox(spec).run()

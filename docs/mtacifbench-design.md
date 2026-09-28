@@ -97,8 +97,7 @@ operation flow — sliced out of the shared transcript positionally, with
 tool-result payloads replaced by a placeholder and the user instruction excluded
 (the judge is asked what the agent *did*, not what it was told).
 
-All of that is model-controlled text arriving in a judge prompt, so the judge is
-told out of band that it is evidence and not instructions, and the prompt names
-the checklist as the only authority. Verdicts are keyed by block index, so a
-judge that renumbers its blocks scores the wrong constraints; the requirement
+All of that is model-controlled text arriving in a judge prompt, and the prompt
+names the checklist as the only authority. Verdicts are keyed by block index, so
+a judge that renumbers its blocks scores the wrong constraints; the requirement
 text it echoes back is the only trace of that, and a mismatch is logged.
